@@ -1,0 +1,62 @@
+# Convex Viaturas CPI-7 (segundo backend, apartado do Materiais)
+# Porta externa nginx: 8081
+# Porta interna convex-backend: 3210 (host) -> 3210 (container)
+# Porta interna auth-api: 8002 (host) -> 8082 (container)
+#
+# IMPORTANTE: NAO MEXE no /opt/convex/ (Materiais)
+# Este compose roda em paralelo, isolado, mesmo server.
+
+services:
+  convex-backend-viaturas:
+    image: ghcr.io/get-convex/convex-backend:latest
+    container_name: convex-backend-viaturas
+    restart: unless-stopped
+    environment:
+      CONVEX_INSTANCE_SECRET: "viaturas-cpi7-2026-secret-key-32-chars-min-aaaa"
+      CONVEX_URL: "http://10.36.177.138:8081"
+      CONVEX_LOCAL_STORAGE: "/convex-storage"
+      # Desabilita o beacon (tenta conectar em api.convex.dev - bloqueado pela firewall PM)
+      DISABLE_BEACON: "1"
+    volumes:
+      - /opt/convex-viaturas/data:/convex-data
+      - /opt/convex-viaturas/storage:/convex-storage
+    # Expor 3212 (host) -> 3210 (container) pra rodar scripts de seed/manutencao
+    # NAO conflita com Materiais (que usa 3210)
+    ports:
+      - "3212:3210"
+    healthcheck:
+      test: ["CMD-SHELL", "! ps aux | grep '[c]onvex-local-backend' > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  auth-api-viaturas:
+    build: /opt/convex-viaturas/auth-api
+    container_name: auth-api-viaturas
+    restart: unless-stopped
+    volumes:
+      - /opt/convex-viaturas/auth-api/auth_api_viaturas.py:/app/auth_api_viaturas.py:rw
+    environment:
+      - CONVEX_URL=http://convex-backend-viaturas:3210
+      - JWT_SECRET=viaturas-pmesp-cpi7-2026-secret
+      - JWT_TTL=604800
+      - SOAP_AUTH_HOST=10.61.9.19
+      - SOAP_PM_HOST=10.61.21.10
+    ports:
+      - "8002:8082"
+    depends_on:
+      - convex-backend-viaturas
+
+  nginx-viaturas:
+    image: nginx:alpine
+    container_name: convex-nginx-viaturas
+    restart: unless-stopped
+    depends_on:
+      - convex-backend-viaturas
+      - auth-api-viaturas
+    volumes:
+      - /opt/convex-viaturas/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /opt/convex-viaturas/dist:/usr/share/nginx/html:ro
+    ports:
+      - "8081:80"
