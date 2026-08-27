@@ -1,7 +1,10 @@
 // Auth + API client - Sistema de Viaturas CPI-7
 import { useEffect, useState } from "react";
 
-const API_BASE = "/api";  // nginx faz proxy pra auth-api-viaturas:8082
+// FIX (William 2026-08-27): VITE_API_BASE aponta pro tunnel (Vercel) quando
+// existir, senao cai pra /api relativo (nginx local faz proxy).
+// Sem isso, Vercel bate em /api/auth/login na propria Vercel = 404.
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "/api";
 
 // Salva JWT no localStorage
 const TOKEN_KEY = "viaturas_token";
