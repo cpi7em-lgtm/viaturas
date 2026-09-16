@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Navigate } from 'react-router-dom'
 import { getUser, isEditor, isAdmin, isGestor } from '../lib/auth'
-import { listViaturas, upsertViatura, listUnits, colocarViaturaEmDescarga, toggleViaturaAtivo, listViaturaHistorico } from '../lib/api'
+import { listViaturas, upsertViatura, listUnits, colocarViaturaEmDescarga, toggleViaturaAtivo, listViaturaHistorico, gerarLinkRonda, listRondasByViatura } from '../lib/api'
 
 export default function ViaturasPage() {
   const user = getUser()
@@ -81,11 +81,11 @@ export default function ViaturasPage() {
   // devem ficar TRAVADOS com base no role + unidades + flag escopo.
   //
   // Regras (confirmadas com William 2026-08-18):
-  // - admin (William) ou escopo="livre" → tudo livre
-  // - 1 unidade matriz BPM (≠ CPI-7) → unidade travado, subordinadas livre
-  // - 1 unidade filha → ambos travados
-  // - 1 unidade CPI-7 raiz (607000000) → livre (ve toda a arvore PMESP)
-  // - 0 ou varias unidades → livre (fallback)
+  // - admin (William) ou escopo="livre" â tudo livre
+  // - 1 unidade matriz BPM (â  CPI-7) â unidade travado, subordinadas livre
+  // - 1 unidade filha â ambos travados
+  // - 1 unidade CPI-7 raiz (607000000) â livre (ve toda a arvore PMESP)
+  // - 0 ou varias unidades â livre (fallback)
   const escopoInfo = useMemo(() => {
     if (!user) return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
     // Admin master sempre livre
@@ -96,30 +96,76 @@ export default function ViaturasPage() {
     if ((user as any).escopo === 'livre') {
       return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
     }
-    // Identifica a(s) unidade(s) do user
-    const unidadesUser = user.unidadesEditor && user.unidadesEditor.length > 0
+    // FIX (William 2026-09-14 v64): identifica a(s) unidade(s) do user
+    // Cada item pode ser ID (string/number) OU objeto
+    const unidadesUser = (user.unidadesEditor && user.unidadesEditor.length > 0
       ? user.unidadesEditor
       : (user.unidadesGestor || [])
-    if (unidadesUser.length !== 1) {
-      // 0 ou varias unidades -> livre (fallback)
+    ).map((u: any) => typeof u === 'object' ? u.id : u).filter(Boolean);
+
+    if (unidadesUser.length === 0) {
+      // 0 unidades -> livre (fallback admin)
       return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
     }
-    const unicaUnidade = unidadesUser[0]
-    const unit = units.find(u => u._id === unicaUnidade)
-    if (!unit) {
-      return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+
+    // Helper: retorna a "matriz tecnica" de cada unidade do user.
+    const matrizTecnica = (id: any): number | null => {
+      const unit = units.find((u: any) => u.id === id || u._id === String(id))
+      if (!unit) return null
+      if (unit.code && unit.code.endsWith('0000')) return unit.id
+      return unit.commandUnit ?? null
     }
-    // CPI-7 raiz → livre
-    if (unit.code === '607000000') {
-      return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+
+    // FIX (William 2026-09-15 v71): DEFENSIVO - se units ainda nao carregou
+    // (1a render), NAO libera os dropdowns. Confia que o backend RLS restringe.
+    // Ao inves disso, trava na primeira unidade do user (defensivo).
+    if (units.length === 0) {
+      const firstId = String(unidadesUser[0])
+      return {
+        lockedUnidade: true,
+        lockedSubordinada: false,
+        unidadeFixa: firstId,
+        subordinadaFixa: '',
+      }
     }
-    // Matriz BPM (termina em 0000, ≠ CPI-7) → unidade travado, subordinada livre
-    if (unit.code.endsWith('0000')) {
-      return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: unit._id, subordinadaFixa: '' }
+
+    const matrizesList = unidadesUser.map(matrizTecnica).filter((x: any) => x !== null)
+    // Se TODAS tem a mesma matriz tecnica (e nao null) -> trava nessa matriz
+    const firstMT = matrizesList[0]
+    if (firstMT !== undefined && matrizesList.every((m: any) => m === firstMT)) {
+      const matriz = units.find((u: any) => u.id === firstMT || u._id === String(firstMT))
+      if (matriz) {
+        // CPI-7 raiz â livre (ve tudo)
+        if (matriz.code === '607000000') {
+          return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+        }
+        // Matriz BPM: trava na matriz, filha livre
+        return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: matriz._id, subordinadaFixa: '' }
+      }
     }
-    // Filha (code NAO termina em 0000) → ambos travados
-    // A unidade mostrada no dropdown Unidade deve ser a MATRIZ pai
-    return { lockedUnidade: true, lockedSubordinada: true, unidadeFixa: unit.parentUnit, subordinadaFixa: unit._id }
+
+    // FIX (William v64): soh 1 unidade, ver se eh matriz ou filha
+    if (unidadesUser.length === 1) {
+      const unicaUnidade = unidadesUser[0]
+      const unit = units.find((u: any) => u.id === unicaUnidade || u._id === String(unicaUnidade))
+      if (unit) {
+        // CPI-7 raiz â livre
+        if (unit.code === '607000000') {
+          return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+        }
+        // Matriz BPM (termina em 0000, â  CPI-7) â unidade travado, subordinada livre
+        if (unit.code && unit.code.endsWith('0000')) {
+          return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: unit._id, subordinadaFixa: '' }
+        }
+        // Filha (code NAO termina em 0000) â ambos travados
+        if (unit.parentUnit) {
+          return { lockedUnidade: true, lockedSubordinada: true, unidadeFixa: unit.parentUnit, subordinadaFixa: unit._id }
+        }
+      }
+    }
+
+    // 0 unidades OU varias com commandUnit diferentes -> livre (fallback)
+    return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
   }, [user, units])
 
   // FIX (William 2026-08-18): quando o escopo trava a unidade, força filtroOpm
@@ -140,8 +186,10 @@ export default function ViaturasPage() {
   const viaturasFiltradas = useMemo(() => {
     let result = viaturas
     // Filtro de subordinada (soh se selecionado)
+    // FIX (William 2026-09-15): usar _id (string) em vez de id (number)
+    // pra match exato com o value do <select>
     if (filtroSubordinada) {
-      result = result.filter(v => v.opm === filtroSubordinada)
+      result = result.filter(v => v.opm && String(v.opm.id) === filtroSubordinada)
     }
     // Filtro de busca textual
     if (filtroBusca.trim()) {
@@ -218,6 +266,11 @@ export default function ViaturasPage() {
       setHistoricoLoading(false)
     }
   }
+
+  // FIX (William 2026-09-14 v60): handleGerarLinkRonda REMOVIDO.
+  // Era da feature DEJEM (descartada no v49). Rondas agora sao feitas
+  // via link do ICT (tela mobile do motorista), nao ha mais QR fixo
+  // por viatura. A funcao foi removida pra nao ficar codigo orfao.
 
   // FIX (William 2026-08-17): handler para enviar viatura para DESCARTE
   async function handleColocarEmDescarga(v: any) {
@@ -306,25 +359,41 @@ export default function ViaturasPage() {
           style={{
             padding: '6px 10px',
             borderRadius: '4px',
-            border: escopoInfo.lockedUnidade ? '2px solid #ff9800' : '1px solid #ccc',
-            background: escopoInfo.lockedUnidade ? '#fff3e0' : 'white',
-            minWidth: '220px',
+            border: escopoInfo.lockedUnidade ? '3px solid #e65100' : '1px solid #ccc',
+            background: escopoInfo.lockedUnidade ? '#ffe0b2' : 'white',
+            minWidth: '240px',
             cursor: escopoInfo.lockedUnidade ? 'not-allowed' : 'pointer',
+            color: escopoInfo.lockedUnidade ? '#bf360c' : '#333',
+            fontWeight: escopoInfo.lockedUnidade ? 600 : 400,
           }}
-          title={escopoInfo.lockedUnidade ? '🔒 Unidade travada pelo seu escopo' : 'Filtrar por unidade'}
+          title={escopoInfo.lockedUnidade ? '🔒 Unidade travada pelo seu escopo - você só tem acesso a esta matriz e suas filhas' : 'Filtrar por unidade'}
         >
-          <option value="">Todas as unidades</option>
-          {matrizes.map(u => (
-            <option key={u._id} value={u._id}>
-              {u.code} - {u.sigla || u.name}
-            </option>
-          ))}
+          {escopoInfo.lockedUnidade
+            ? (() => {
+                // TRAVADO: mostra APENAS a unidade fixa (sem "Todas" nem outras)
+                const u = units.find(x => x._id === escopoInfo.unidadeFixa || String(x.id) === String(escopoInfo.unidadeFixa))
+                return (
+                  <option value={escopoInfo.unidadeFixa}>
+                    🔒 {u ? `${u.code} - ${u.sigla || u.name}` : escopoInfo.unidadeFixa}
+                  </option>
+                )
+              })()
+            : (
+              <>
+                <option value="">Todas as unidades</option>
+                {matrizes.map(u => (
+                  <option key={u._id} value={u._id}>
+                    {u.code} - {u.sigla || u.name}
+                  </option>
+                ))}
+              </>
+            )}
         </select>
 
-        {/* FIX (William 2026-08-18): FILTRO DE SUBORDINADAS
-            SÓ aparece quando a unidade selecionada tem filhas.
-            Limpa o filtro quando troca de unidade. */}
-        {subordinadas.length > 0 && (
+        {/* FIX (William 2026-09-15 v70): FILTRO DE FILHAS/OPM
+            SEMPRE aparece quando uma unidade foi selecionada.
+            Mostra a opcao "Todas as OPMs desta unidade" + cada filha. */}
+        {filtroOpm && (
           <select
             value={filtroSubordinada}
             onChange={e => setFiltroSubordinada(e.target.value)}
@@ -332,36 +401,50 @@ export default function ViaturasPage() {
             style={{
               padding: '6px 10px',
               borderRadius: '4px',
-              border: escopoInfo.lockedSubordinada ? '2px solid #ff9800' : '1px solid #ccc',
-              background: escopoInfo.lockedSubordinada ? '#fff3e0' : 'white',
-              minWidth: '240px',
+              border: escopoInfo.lockedSubordinada ? '3px solid #e65100' : '1px solid #ccc',
+              background: escopoInfo.lockedSubordinada ? '#ffe0b2' : 'white',
+              minWidth: '260px',
               cursor: escopoInfo.lockedSubordinada ? 'not-allowed' : 'pointer',
+              color: escopoInfo.lockedSubordinada ? '#bf360c' : '#333',
+              fontWeight: escopoInfo.lockedSubordinada ? 600 : 400,
             }}
-            title={escopoInfo.lockedSubordinada ? '🔒 Subordinada travada pelo seu escopo' : 'Filtrar por uma subordinada'}
+            title={escopoInfo.lockedSubordinada
+              ? '🔒 Filha travada pelo seu escopo'
+              : (subordinadas.length > 0
+                  ? 'Filtrar por uma filha específica (ou "Todas" pra ver matriz+filhas)'
+                  : 'Esta unidade não tem filhas cadastradas')}
           >
-            <option value="">Todas as subordinadas</option>
-            {subordinadas.map(u => (
-              <option key={u._id} value={u._id}>
-                {u.code} - {u.name}
+            {escopoInfo.lockedSubordinada ? (
+              <option value={escopoInfo.subordinadaFixa}>
+                🔒 {units.find(x => x._id === escopoInfo.subordinadaFixa)?.name || escopoInfo.subordinadaFixa}
               </option>
-            ))}
+            ) : (
+              <>
+                <option value="">📋 Todas as OPMs desta unidade</option>
+                {subordinadas.map(u => (
+                  <option key={u._id} value={u._id}>
+                    {u.code} - {u.name}
+                  </option>
+                ))}
+              </>
+            )}
           </select>
         )}
 
         <div style={{ flex: 1 }}></div>
 
-        {/* FIX (William 2026-08-18): Badge visual de escopo */}
+        {/* FIX (William 2026-09-15 v69): Badge visual de escopo - AGORA MUITO mais visivel */}
         {(escopoInfo.lockedUnidade || escopoInfo.lockedSubordinada) && (
           <span style={{
-            padding: '4px 10px',
-            background: '#fff3e0',
-            border: '1px solid #ff9800',
-            borderRadius: 12,
+            padding: '6px 12px',
+            background: '#e65100',
+            border: '2px solid #bf360c',
+            borderRadius: 6,
             fontSize: 12,
-            color: '#e65100',
-            fontWeight: 600,
-          }} title="Seu escopo restringe os filtros de unidade">
-            🔒 Escopo restrito
+            color: 'white',
+            fontWeight: 700,
+          }} title="Seu escopo restringe os filtros de unidade. Você só vê as unidades que tem acesso.">
+            🔒 ESCOPO RESTRITO
           </span>
         )}
 
@@ -391,7 +474,7 @@ export default function ViaturasPage() {
               fontSize: '13px',
             }}
             title="Limpar busca"
-          >✕</button>
+          >â</button>
         )}
 
         {/* Contador */}
@@ -508,7 +591,7 @@ export default function ViaturasPage() {
               <div>
                 <h2 style={{ margin: 0 }}>📜 Histórico de Baixa/Reativação</h2>
                 <p style={{ color: '#666', fontSize: 14, marginTop: 4, marginBottom: 0 }}>
-                  <strong>{viaturaHistorico.prefixo}</strong> — {viaturaHistorico.marcaModelo}
+                  <strong>{viaturaHistorico.prefixo}</strong> â {viaturaHistorico.marcaModelo}
                   {viaturaHistorico.placa && <span style={{ marginLeft: 8 }}>({viaturaHistorico.placa})</span>}
                 </p>
               </div>
@@ -637,7 +720,7 @@ export default function ViaturasPage() {
               </thead>
               <tbody>
                 {viaturasFiltradas.map(v => {
-                  const unit = units.find(u => u._id === v.opm)
+                  const unit = v.opm ? units.find(u => u.id === v.opm.id) : null
                   // COR DA LINHA por status (William 2026-08-17)
                   // - Operando: verde bem sutil
                   // - Baixada: laranja bem sutil
@@ -665,7 +748,16 @@ export default function ViaturasPage() {
                       <td>{v.placa || '-'}</td>
                       <td>{v.patrimonio || '-'}</td>
                       <td style={{ fontSize: '12px' }}>{unit ? `${unit.code} - ${unit.sigla || unit.name}` : '-'}</td>
-                      <td style={{ fontSize: '12px' }}>{v.motivo || '-'}</td>
+                      <td style={{ fontSize: '12px' }}>
+                        {/* FIX (William 2026-08-31): quando a viatura esta
+                            operando e o motivo no banco eh "OPERACAO"
+                            (legado do LCM), mostra "OPERANDO" pra ficar
+                            claro o status atual. Caso contrario, mostra
+                            o motivo gravado. */}
+                        {v.ativo && (v.motivo === 'OPERAÇÃO' || v.motivo === 'OPERACAO' || v.motivo === 'Operação')
+                          ? 'OPERANDO'
+                          : (v.motivo || '-')}
+                      </td>
                       <td>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                           {(isEditor() || isAdmin()) && (
@@ -705,6 +797,10 @@ export default function ViaturasPage() {
                               cursor: 'pointer',
                             }}
                           >📜 Histórico</button>
+                          {/* FIX (William 2026-09-14 v60): Botao "QR Ronda" REMOVIDO.
+                              Era da feature DEJEM (descartada no v49).
+                              Rondas agora sao feitas via link do ICT (tela mobile do
+                              motorista). Botao removido pra nao confundir usuarios. */}
                         </div>
                       </td>
                     </tr>
@@ -731,7 +827,7 @@ function ViaturaFormModal({ user, units, viatura, onClose, onSaved, onColocarEmD
   onSaved: () => void
   onColocarEmDescarga: (v: any) => void
 }) {
-  const [opm, setOpm] = useState(viatura?.opm || user.unit || '')
+  const [opm, setOpm] = useState(viatura?.opm?.id || user.unit?.id || '')
   const [prefixo, setPrefixo] = useState(viatura?.prefixo || '')
   const [tipo, setTipo] = useState(viatura?.tipo || 'CR')
   const [categoria, setCategoria] = useState(viatura?.categoria || 'OPERACIONAL')

@@ -35,7 +35,7 @@ export default function HomePage() {
     })
 
     getHomeStats(currentUser.cpf)
-      .then(setStats)
+      .then((data: any) => setStats(data?.stats || data))
       .catch(e => setErro(e.message))
       .finally(() => setLoading(false))
   }, [currentUser?.cpf])
@@ -105,7 +105,7 @@ export default function HomePage() {
             <tr><th>Nome de Guerra</th><td>{user?.warName}</td></tr>
             <tr><th>Posto/Graduacao</th><td>{user?.postoGraduacao}</td></tr>
             <tr><th>OPM</th><td>{user?.opmCode}</td></tr>
-            <tr><th>Unidade</th><td>{user?.unitName || user?.unit}</td></tr>
+            <tr><th>Unidade</th><td>{user?.unit?.name || user?.unit?.sigla || "—"}</td></tr>
             <tr><th>Role no app</th>
               <td>
                 {user?.viaturasRole === 'admin' && 'Administrador'}

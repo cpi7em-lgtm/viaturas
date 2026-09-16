@@ -1,31 +1,24 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// Vite config - Sistema de Viaturas CPI-7
-// Build output vai pro /opt/convex-viaturas/dist/
+// Vite config - Sistema de Viaturas CPI-7 (Vercel)
+// Em dev: server-local.mjs roda na 3001 e Vite faz proxy /api -> 3001
+// Em prod: Vercel serve /api/* direto
 
 export default defineConfig({
-  // FIX (William 2026-08-26): base relativo ('') pra funcionar tanto em
-  // https://app.vercel.app/ (raiz) quanto em https://x.com/viaturas/ (subpath do nginx local)
-  // Browser resolve os assets relativamente ao URL atual
-  base: '',
+  base: "",
   plugins: [react()],
   server: {
     port: 5174,
     proxy: {
-      '/api': {
-        target: 'http://localhost:8002',
+      "/api": {
+        target: "http://localhost:3001",
         changeOrigin: true,
       },
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: "dist",
     sourcemap: false,
-    rollupOptions: {
-      output: {
-        manualChunks: undefined,
-      },
-    },
   },
-})
+});

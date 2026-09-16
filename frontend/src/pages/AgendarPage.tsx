@@ -1,29 +1,9 @@
 ﻿import { useState } from 'react'
 import { useNavigate, Navigate } from 'react-router-dom'
 import { getUser } from '../lib/auth'
-import { createAgendamento, satConsulta } from '../lib/api'
+import { createAgendamento } from '../lib/api'
+import { parseSAT, abrirSATPopup, type SatResult } from '../lib/sat-parser'
 import { UNIDADES_REQUERENTES, SELECT_SECOES_SETORES, SELECT_TIPOS_VIATURA, POSTO_GRADUACAO } from '../lib/constants'
-
-interface SatResult {
-  encontrado: boolean
-  erro?: string
-  re?: string
-  postoGraduacao?: string
-  nome?: string
-  opm?: string
-  opmCode?: string
-  cnhCategoria?: string
-  boletim?: string
-  dataProva?: string
-  cassada?: boolean
-  // FIX (William 2026-08-24): todas as publicacoes de habilitacao
-  publicacoes?: Array<{
-    categoria: string
-    boletim: string
-    data: string
-    cassada: boolean
-  }>
-}
 
 export default function AgendarPage() {
   const user = getUser()
@@ -39,6 +19,7 @@ export default function AgendarPage() {
   const [dataMissao, setdataMissao] = useState('')
   const [destino, setDestino] = useState('')
   const [finalidade, setFinalidade] = useState('')
+  const [horarioApresentacao, setHorarioApresentacao] = useState('')
   const [oficialAutorizador, setOficialAutorizador] = useState('')
   const [retiradaData, setRetiradaData] = useState('')
   const [retiradaHora, setRetiradaHora] = useState('')
@@ -49,8 +30,19 @@ export default function AgendarPage() {
   const [solicitanteMotorista, setSolicitanteMotorista] = useState(true)
   const [motoristaRe, setMotoristaRe] = useState('')
   const [satResult, setSatResult] = useState<SatResult | null>(null)
-  const [satLoading, setSatLoading] = useState(false)
   const [satErro, setSatErro] = useState('')
+  const [satPaste, setSatPaste] = useState('')
+  const [satPasteAberto, setSatPasteAberto] = useState(false)
+  const [manualMode, setManualMode] = useState(false)
+  // Estado pra preenchimento manual (fallback se SAT nao abrir)
+  const [motoristaManual, setMotoristaManual] = useState({
+    posto: '',
+    nome: '',
+    opm: '',
+    cnh: '',
+    boletim: '',
+    dataProva: '',
+  })
 
   const [submitting, setSubmitting] = useState(false)
   const [erro, setErro] = useState('')
@@ -60,24 +52,76 @@ export default function AgendarPage() {
     return <Navigate to="/login" replace />
   }
 
-  async function buscarMotorista() {
+  function abrirJanelaSAT() {
     const reLimpo = (solicitanteMotorista ? (user.re || '') : motoristaRe).replace(/\D/g, '').trim()
     if (reLimpo.length < 2) {
-      setSatErro('RE invalido')
+      setSatErro('RE invalido (precisa de pelo menos 2 digitos)')
       return
     }
-    setSatLoading(true)
     setSatErro('')
-    setSatResult(null)
-    try {
-      const r = await satConsulta(reLimpo)
-      setSatResult(r)
-      if (!r.encontrado) setSatErro(r.erro || 'PM não encontrado no SAT')
-    } catch (e: any) {
-      setSatErro(e.message)
-    } finally {
-      setSatLoading(false)
+    setSatPasteAberto(true)
+    abrirSATPopup(reLimpo)
+  }
+
+  function processarPasteSAT() {
+    if (!satPaste || satPaste.trim().length < 10) {
+      setSatErro('Cole o resultado do SAT no campo abaixo (selecione o texto na pagina do SAT e CTRL+V aqui)')
+      return
     }
+    const reLimpo = (solicitanteMotorista ? (user.re || '') : motoristaRe).replace(/\D/g, '').trim()
+    const r = parseSAT(satPaste, reLimpo)
+    setSatResult(r)
+    if (!r.encontrado) {
+      setSatErro(r.erro || 'Nao foi possivel extrair dados do SAT. Confira se colou o conteudo da pagina inteira.')
+    } else {
+      setSatErro('')
+    }
+  }
+
+  function ativarModoManual() {
+    setManualMode(true)
+    // Se for o proprio solicitante, pre-preenche com os dados dele
+    if (solicitanteMotorista && user) {
+      setMotoristaManual({
+        posto: user.postoGraduacao || '',
+        nome: user.name || '',
+        opm: user.unit?.name || user.unit?.sigla || '',
+        cnh: '',
+        boletim: '',
+        dataProva: '',
+      })
+    }
+    setSatResult({
+      encontrado: true,
+      re: (solicitanteMotorista ? (user.re || '') : motoristaRe).replace(/\D/g, '').trim(),
+      postoGraduacao: '',
+      nome: '',
+      opm: '',
+      opmCode: '',
+      cnhCategoria: '',
+      boletim: '',
+      dataProva: '',
+      cassada: false,
+      publicacoes: [],
+    })
+  }
+
+  function aplicarManual() {
+    setSatResult({
+      encontrado: true,
+      re: (solicitanteMotorista ? (user.re || '') : motoristaRe).replace(/\D/g, '').trim(),
+      postoGraduacao: motoristaManual.posto,
+      nome: motoristaManual.nome,
+      opm: motoristaManual.opm,
+      opmCode: '',
+      cnhCategoria: motoristaManual.cnh,
+      boletim: motoristaManual.boletim,
+      dataProva: motoristaManual.dataProva,
+      cassada: false,
+      publicacoes: [],
+    })
+    setSatErro('')
+    setManualMode(false)
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -109,8 +153,12 @@ export default function AgendarPage() {
       if (!oficialAutorizador.trim()) {
         throw new Error('Preencha o oficial que autorizou')
       }
-      if (!satResult || !satResult.encontrado) {
-        throw new Error('Busque o motorista no SAT antes de enviar')
+      // FIX (William 2026-09-04 v2): SEMPRE exigir o RE do motorista.
+      // A consulta SAT é SEMPRE por conta do GESTOR na aprovacao,
+      // independente de o solicitante ser o motorista ou nao.
+      const reLimpo = (solicitanteMotorista ? (user.re || '') : motoristaRe).replace(/\D/g, '').trim()
+      if (reLimpo.length < 2) {
+        throw new Error('Informe o RE do motorista (sem digito verificador). Se você é o motorista, o seu RE já vem preenchido.')
       }
 
       const args: any = {
@@ -125,22 +173,24 @@ export default function AgendarPage() {
         dataMissao: new Date(dataMissao).getTime(),
         destino,
         finalidade,
+        horarioApresentacao,
         oficialAutorizador,
         retiradaData: new Date(retiradaData).getTime(),
         retiradaHora,
         devolucaoData: new Date(devolucaoData).getTime(),
         devolucaoHora,
         solicitanteMotorista,
-        motoristaRe: satResult.re,
-        motoristaPosto: satResult.postoGraduacao,
-        motoristaNome: satResult.nome,
-        motoristaOpm: satResult.opm,
-        motoristaOpmCode: satResult.opmCode,
-        motoristaCnh: satResult.cnhCategoria,
-        motoristaBoletim: satResult.boletim,
-        motoristaDataProva: satResult.dataProva,
-        // FIX (William 2026-08-24): salva todas as publicacoes
-        motoristaPublicacoes: satResult.publicacoes,
+        // FIX (William 2026-09-04 v2): só envia o RE; resto fica null
+        // pra ser preenchido pelo GESTOR via /atualizar-motorista na aprovacao
+        motoristaRe: reLimpo,
+        motoristaPosto: null,
+        motoristaNome: null,
+        motoristaOpm: null,
+        motoristaOpmCode: null,
+        motoristaCnh: null,
+        motoristaBoletim: null,
+        motoristaDataProva: null,
+        motoristaPublicacoes: null,
       }
 
       await createAgendamento(args)
@@ -191,92 +241,55 @@ export default function AgendarPage() {
           </div>
         </div>
 
-        {/* MOTORISTA (SAT) */}
+        {/* MOTORISTA (SAT) - sempre delegado pro gestor na aprovacao (William 2026-09-04 v2) */}
         <div className="card">
-          <h3 style={{ marginTop: 0 }}>Motorista (consulta SAT)</h3>
+          <h3 style={{ marginTop: 0 }}>Motorista</h3>
           <div className="form-group">
             <label style={{ display: 'block', marginBottom: 8 }}>O solicitante é o proprio motorista? <span className="required">*</span></label>
             <label style={{ display: 'inline-flex', alignItems: 'center', marginRight: 16, cursor: 'pointer' }}>
-              <input type="radio" name="solMotorista" checked={solicitanteMotorista} onChange={() => { setSolicitanteMotorista(true); setSatResult(null); }} style={{ marginRight: 4 }} />
+              <input type="radio" name="solMotorista" checked={solicitanteMotorista} onChange={() => setSolicitanteMotorista(true)} style={{ marginRight: 4 }} />
               Sim, eu vou dirigir
             </label>
             <label style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-              <input type="radio" name="solMotorista" checked={!solicitanteMotorista} onChange={() => { setSolicitanteMotorista(false); setSatResult(null); }} style={{ marginRight: 4 }} />
+              <input type="radio" name="solMotorista" checked={!solicitanteMotorista} onChange={() => setSolicitanteMotorista(false)} style={{ marginRight: 4 }} />
               Não, outro PM vai dirigir
             </label>
           </div>
 
-          {!solicitanteMotorista && (
-            <div className="form-group">
-              <label>RE do motorista (sem digito verificador) <span className="required">*</span></label>
-              <input
-                type="text"
-                value={motoristaRe}
-                onChange={e => setMotoristaRe(e.target.value)}
-                placeholder="Ex: 111926"
-                maxLength={6}
-                style={{ fontFamily: 'monospace' }}
-              />
-            </div>
-          )}
+          <div className="form-group">
+            <label>RE do motorista (sem digito verificador) <span className="required">*</span></label>
+            <input
+              type="text"
+              value={solicitanteMotorista ? (user.re || '').replace(/\D/g, '') : motoristaRe}
+              onChange={e => setMotoristaRe(e.target.value.replace(/\D/g, ''))}
+              placeholder="Ex: 111926"
+              maxLength={6}
+              readOnly={solicitanteMotorista}
+              disabled={solicitanteMotorista}
+              style={{ fontFamily: 'monospace', background: solicitanteMotorista ? '#f5f5f5' : 'white' }}
+            />
+            <small style={{ color: '#666', display: 'block', marginTop: 4 }}>
+              O RE informado sera usado pelo GESTOR para consultar o SAT no momento da aprovacao.
+              Se voce informar um RE errado, a consulta do gestor vai falhar e o agendamento pode
+              ser rejeitado.
+            </small>
+          </div>
 
-          <button type="button" className="btn btn-primary" onClick={buscarMotorista} disabled={satLoading}>
-            {satLoading ? 'Consultando SAT...' : 'Buscar no SAT'}
-          </button>
-          {satErro && <div className="alert alert-error" style={{ marginTop: 8 }}>{satErro}</div>}
-
-          {satResult && satResult.encontrado && (
-            <div style={{ marginTop: 12, padding: 12, background: '#e8f5e9', border: '1px solid #4caf50', borderRadius: 4 }}>
-              <table style={{ fontSize: 14 }}>
-                <tbody>
-                  <tr><td style={{ color: '#666', paddingRight: 12 }}>Motorista:</td><td><strong>{satResult.postoGraduacao} {satResult.nome}</strong></td></tr>
-                  <tr><td style={{ color: '#666' }}>RE:</td><td style={{ fontFamily: 'monospace' }}>{satResult.re}</td></tr>
-                  <tr><td style={{ color: '#666' }}>OPM:</td><td>{satResult.opm} ({satResult.opmCode})</td></tr>
-                  <tr>
-                    <td style={{ color: '#666', verticalAlign: 'top' }}>CNH:</td>
-                    <td>
-                      {/* FIX (William 2026-08-24): mostra TODAS as publicacoes,
-                          sem destaque hierarquico (todas sao iguais) */}
-                      {satResult.publicacoes && satResult.publicacoes.length > 0 ? (
-                        <table style={{ fontSize: 13, borderCollapse: 'collapse' }}>
-                          <thead>
-                            <tr style={{ color: '#666', fontSize: 11 }}>
-                              <th style={{ textAlign: 'left', padding: '2px 8px 2px 0', fontWeight: 500 }}>Cat</th>
-                              <th style={{ textAlign: 'left', padding: '2px 8px 2px 0', fontWeight: 500 }}>Boletim</th>
-                              <th style={{ textAlign: 'left', padding: '2px 0 2px 0', fontWeight: 500 }}>Data</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {satResult.publicacoes.map((p, i) => (
-                              <tr key={i} style={{
-                                background: p.cassada ? '#ffebee' : 'transparent',
-                                color: p.cassada ? '#c62828' : 'inherit',
-                              }}>
-                                <td style={{ padding: '2px 8px 2px 0', fontWeight: 600 }}>{p.categoria}</td>
-                                <td style={{ padding: '2px 8px 2px 0' }}>
-                                  {p.boletim ? <code style={{ fontSize: 12 }}>{p.boletim}</code> : '-'}
-                                </td>
-                                <td style={{ padding: '2px 0' }}>{p.data || '-'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : (
-                        <span>{satResult.cnhCategoria} (Boletim: {satResult.boletim}, {satResult.dataProva})</span>
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
+          <div className="alert" style={{ background: '#fff3e0', border: '1px solid #ff9800', color: '#5d4037', padding: 10, borderRadius: 4, marginTop: 8 }}>
+            <strong>📡 SAT é consultado pelo gestor na aprovação.</strong><br />
+            <span style={{ fontSize: 13 }}>
+              {solicitanteMotorista
+                ? 'Mesmo sendo o motorista, a consulta SAT fica por conta do gestor. Você só precisa informar que é o motorista e confirmar o RE acima.'
+                : 'Você NÃO é o motorista, então a consulta SAT fica por conta do gestor no momento da aprovação. Você só precisa informar o RE correto.'}
+            </span>
+          </div>
         </div>
 
         <div className="card">
           <h3 style={{ marginTop: 0 }}>Unidade / Missão</h3>
 
           <div className="alert" style={{ background: '#e3f2fd', border: '1px solid #1976d2', color: '#0d47a1', marginBottom: 12, padding: 10, borderRadius: 4 }}>
-            <strong>Sua OPM de origem:</strong> {user.unitName || user.opmCode || '?'} (automatica do seu login, não editavel).
+            <strong>Sua OPM de origem:</strong> {user.unit?.name || user.unit?.sigla || user.opmCode || '?'} (automatica do seu login, não editavel).
           </div>
 
           <div className="form-row">
@@ -367,6 +380,18 @@ export default function AgendarPage() {
               value={finalidade}
               onChange={e => setFinalidade(e.target.value)}
               placeholder="Resumo da missão"
+              required
+            />
+          </div>
+          <div className="form-group">
+            {/* FIX (William 2026-09-09 v29): horario especifico que o
+                solicitante informa pra "apresentar-se em" no IFCT.
+                Sera usado no PDF do IFCT no campo "Apresentar-se em". */}
+            <label>Horário da apresentação <span className="required">*</span></label>
+            <input
+              type="time"
+              value={horarioApresentacao}
+              onChange={e => setHorarioApresentacao(e.target.value)}
               required
             />
           </div>

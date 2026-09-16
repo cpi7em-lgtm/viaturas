@@ -176,7 +176,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user) return
     getTotais(user.cpf)
-      .then(setDados)
+      .then((data: any) => setDados(data))
       .catch(e => setErro(e.message))
       .finally(() => setLoading(false))
   }, [user?.cpf])

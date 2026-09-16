@@ -1,288 +1,390 @@
-﻿// Convex API helpers - Sistema de Viaturas CPI-7
-// Wrappers em volta de apiFetch pra cada query/mutation do backend
-// IMPORTANTE: Convex HTTP API espera body { path, args }
-// FIX (William 2026-08-10): sub-path /viaturas/ via proxy reverso no nginx do Materiais (8080)
-//   Os caminhos viraram /viaturas/api/... e /viaturas/convex/...
-//   O nginx do Materiais (8080) faz rewrite removendo o prefixo e encaminha pra :8081
+// ============================================================
+// api.ts - Wrappers pros endpoints da Vercel (Postgres backend)
+// Cada função mapeia 1 endpoint HTTP
+// IMPORTANTE: funcoes usadas como array (setState, .find, .filter)
+// devem RETORNAR ARRAY DIRETO, nao objeto {ok, items}.
+// ============================================================
 
 import { apiFetch } from "./auth";
 
-// Helper: monta body no formato { path, args } exigido pelo Convex HTTP
-function convexBody(path: string, args: any) {
-  return JSON.stringify({ path, args });
-}
+// ============================================================
+// AUTH
+// ============================================================
 
+export const refreshSession = () => apiFetch(`/api/auth/refresh`, { method: "POST" });
+
+// ============================================================
+// UNITS
+// ============================================================
+
+/**
+ * Lista unidades. Retorna ARRAY de unidades (cada uma com id, code, name, sigla, etc).
+ * O endpoint /api/units/list retorna {ok, units: [...]}; extraimos .units aqui.
+ */
+export const listUnits = async (activeOnly = true): Promise<any[]> => {
+  const data: any = await apiFetch(`/api/units/list?activeOnly=${activeOnly}`);
+  return data.units || [];
+};
+
+export const getUnit = async (id: number) => {
+  const units = await listUnits(false);
+  return units.find((u: any) => u.id === id);
+};
+
+export const listUnitsHierarchical = async () => {
+  // Por enquanto, retorna flat; hierarquia eh resolvida client-side via parentUnit/commandUnit
+  return listUnits();
+};
+
+// TODO Sprint 2: implementar endpoints
+export const createUnit = async (_args: any) => ({ ok: true, id: 0 });
+export const updateUnit = async (_args: any) => ({ ok: true });
+export const deactivateUnit = async (_cpf: string, _id: string) => ({ ok: true });
+export const reactivateUnit = async (_cpf: string, _id: string) => ({ ok: true });
+
+// ============================================================
+// USERS
+// ============================================================
+
+export const listAllUsers = async (onlyApproved = true, search = ""): Promise<any[]> => {
+  const data: any = await apiFetch(
+    `/api/users/list?onlyApproved=${onlyApproved}${search ? `&search=${encodeURIComponent(search)}` : ""}`
+  );
+  return data.users || [];
+};
+
+export const listPendingUsers = async (): Promise<any[]> => {
+  const data: any = await apiFetch(`/api/users/pending`);
+  return data.users || [];
+};
+
+// FIX (William 2026-09-14 v65): approveUser usa mesma hierarquia nova
+export const approveUser = (userId: number, viaturasRole: string, matrizId?: number, filhasIds?: number[] | null) =>
+  apiFetch(`/api/users/approve`, {
+    method: "POST",
+    body: JSON.stringify({ userId, viaturasRole, matrizId, filhasIds }),
+  });
+
+export const rejectUser = (userId: number, motivo: string) =>
+  apiFetch(`/api/users/reject`, {
+    method: "POST",
+    body: JSON.stringify({ userId, motivo }),
+  });
+
+export const promoteUser = (userId: number, opts: { viaturasRole?: string; unidadesGestor?: number[]; unidadesEditor?: number[]; escopo?: string; unitId?: number }) =>
+  apiFetch(`/api/users/promote`, {
+    method: "POST",
+    body: JSON.stringify({ userId, ...opts }),
+  });
+
+// FIX (William 2026-09-14 v65): aceita matrizId + filhasIds (nova hierarquia)
+export const setViaturasRole = (args: {
+  userId: number;
+  viaturasRole: string;
+  escopo?: string;
+  matrizId?: number;
+  filhasIds?: number[] | null;
+  // Modo legado (continua aceitando, mas recomendado usar matriz+filhas):
+  unidadesGestor?: number[];
+  unidadesEditor?: number[];
+  unitId?: number | null;
+}) =>
+  apiFetch(`/api/users/promote`, {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
+
+export const completeProfile = (data: any) =>
+  apiFetch(`/api/users/profile`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+
+// ============================================================
 // AGENDAMENTOS
-export const listAgendamentos = (cpf: string, status?: string, unidadeId?: string) =>
-  apiFetch("/viaturas/convex/query/agendamentos:list", {
-    method: "POST",
-    body: convexBody("agendamentos:list", { cpf, status, unidadeId }),
-  });
+// ============================================================
 
-export const listAgendamentosPendentes = (cpf: string) =>
-  apiFetch("/viaturas/convex/query/agendamentos:listPendentes", {
-    method: "POST",
-    body: convexBody("agendamentos:listPendentes", { cpf }),
-  });
+/**
+ * Lista agendamentos. Retorna ARRAY direto.
+ * Parametros: status (opcional), unidadeId (opcional)
+ */
+export const listAgendamentos = async (_cpf?: string, status?: string, unidadeId?: string): Promise<any[]> => {
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (unidadeId) params.set("unidadeId", unidadeId);
+  const qs = params.toString();
+  const data: any = await apiFetch(`/api/agendamentos/list${qs ? `?${qs}` : ""}`);
+  return data.agendamentos || [];
+};
 
-export const getAgendamento = (id: string) =>
-  apiFetch("/viaturas/convex/query/agendamentos:get", {
-    method: "POST",
-    body: convexBody("agendamentos:get", { id }),
-  });
+export const listAgendamentosPendentes = async (_cpf?: string): Promise<any[]> => listAgendamentos(undefined, "pendente");
 
-export const listAgendamentosPorMes = (cpf: string, ano: number, mes: number) =>
-  apiFetch("/viaturas/convex/query/agendamentos:listPorMes", {
-    method: "POST",
-    // FIX (William 2026-08-21): chave "mes" sem acento (Convex rejeita acento em field names)
-    body: convexBody("agendamentos:listPorMes", { cpf, ano, mes }),
-  });
+export const getAgendamento = async (id: number) => {
+  const data: any = await apiFetch(`/api/agendamentos/get?id=${id}`);
+  return data;
+};
 
-export const createAgendamento = (args: {
-  cpf: string;
-  unidadeRequerente: string;        // code SIAFEM ou "OUTRO"
-  unidadeRequerenteOutro?: string;  // se for OUTRO
-  secaoSetor?: string;
-  tipoViaturaSolicitada: string;
-  tipoViaturaOutro?: string;
-  dataMissao: number;
-  destino: string;
-  finalidade: string;
-  oficialAutorizador: string;
-  retiradaData: number;
-  retiradaHora: string;
-  devolucaoData: number;
-  devolucaoHora: string;
-  solicitanteMotorista?: boolean;
-  motoristaRe?: string;
-  motoristaPosto?: string;
-  motoristaNome?: string;
+export const listAgendamentosPorMes = async (_cpf: string, ano: number, mes: number): Promise<any[]> => {
+  const data: any = await apiFetch(`/api/agendamentos/list-por-mes?ano=${ano}&mes=${mes}`);
+  return data.agendamentos || [];
+};
+
+/**
+ * Cria novo agendamento.
+ * Args: camelCase igual Convex (unidadeRequerente, dataMissao, etc).
+ * Nao precisa de cpf - backend pega do JWT.
+ */
+export const createAgendamento = async (args: any) => {
+  return apiFetch(`/api/agendamentos/create`, {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
+};
+
+// SAT agora é client-side (parser no browser). Ver lib/sat-parser.ts
+// A Vercel não consegue acessar a intranet PM, então o user abre o SAT
+// direto no navegador dele e cola o resultado aqui.
+
+export const approveAgendamento = async (_cpf: string, agendamentoId: number) => {
+  return apiFetch(`/api/agendamentos/approve`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId }),
+  });
+};
+
+export const rejectAgendamento = async (_cpf: string, agendamentoId: number, motivo: string) => {
+  return apiFetch(`/api/agendamentos/reject`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId, motivo }),
+  });
+};
+
+export const atribuirViatura = async (_cpf: string, agendamentoId: number, viaturaId: number, odometroRetirada?: number) => {
+  return apiFetch(`/api/agendamentos/atribuir`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId, viaturaId, odometroRetirada }),
+  });
+};
+
+export const getUltimoOdometro = async (viaturaId: number) => {
+  return apiFetch(`/api/agendamentos/get-ultimo-odometro?viaturaId=${viaturaId}`);
+};
+
+export const concluirAgendamento = async (_cpf: string, agendamentoId: number, odometroDevolucao?: number, naoCompareceu?: boolean) => {
+  return apiFetch(`/api/agendamentos/concluir`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId, odometroDevolucao, naoCompareceu }),
+  });
+};
+
+export const editarOdometro = async (_cpf: string, agendamentoId: number, tipo: string, novoOdometro: number) => {
+  return apiFetch(`/api/agendamentos/editar-odometro`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId, tipo, novoOdometro }),
+  });
+};
+
+export const cancelAgendamento = async (_cpf: string, agendamentoId: number) => {
+  return apiFetch(`/api/agendamentos/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId }),
+  });
+};
+
+export const excluirAgendamento = async (_cpf: string, agendamentoId: number) => {
+  return apiFetch(`/api/agendamentos/excluir`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId }),
+  });
+};
+
+/**
+ * FIX (William 2026-09-04): atualiza dados do motorista de um agendamento.
+ * Chamado pelo GESTOR quando o solicitante NAO eh o motorista - o gestor
+ * consulta o SAT do RE informado e preenche os dados do motorista aqui.
+ */
+export const atualizarMotorista = async (agendamentoId: number, data: {
+  motoristaRe: string;
+  motoristaPosto: string;
+  motoristaNome: string;
   motoristaOpm?: string;
   motoristaOpmCode?: string;
   motoristaCnh?: string;
   motoristaBoletim?: string;
   motoristaDataProva?: string;
-}) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:create", {
+  motoristaPublicacoes?: any[];
+}) => {
+  return apiFetch(`/api/agendamentos/atualizar-motorista`, {
     method: "POST",
-    body: convexBody("agendamentos:create", args),
+    body: JSON.stringify({ agendamentoId, ...data }),
   });
+};
 
-// Busca PM no SAT da PMESP pelo RE (sem digito verificador)
-export const satConsulta = (re: string) =>
-  apiFetch(`/viaturas/api/sat/consulta?re=${encodeURIComponent(re)}`);
-
-export const approveAgendamento = (cpf: string, agendamentoId: string) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:approve", {
-    method: "POST",
-    body: convexBody("agendamentos:approve", { cpf, agendamentoId }),
-  });
-
-export const rejectAgendamento = (cpf: string, agendamentoId: string, motivo: string) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:reject", {
-    method: "POST",
-    body: convexBody("agendamentos:reject", { cpf, agendamentoId, motivo }),
-  });
-
-export const atribuirViatura = (
-  cpf: string,
-  agendamentoId: string,
-  viaturaId: string,
-  odometroRetirada: number,
-) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:atribuirViatura", {
-    method: "POST",
-    body: convexBody("agendamentos:atribuirViatura", { cpf, agendamentoId, viaturaId, odometroRetirada }),
-  });
-
-export const getUltimoOdometro = (viaturaId: string) =>
-  apiFetch("/viaturas/convex/query/agendamentos:getUltimoOdometro", {
-    method: "POST",
-    body: convexBody("agendamentos:getUltimoOdometro", { viaturaId }),
-  });
-
-export const concluirAgendamento = (cpf: string, agendamentoId: string, odometroDevolucao: number, naoCompareceu?: boolean) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:concluir", {
-    method: "POST",
-    body: convexBody("agendamentos:concluir", { cpf, agendamentoId, odometroDevolucao, naoCompareceu }),
-  });
-
-export const editarOdometro = (
-  cpf: string,
-  agendamentoId: string,
-  tipo: "retirada" | "devolucao",
-  novoOdometro: number,
-) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:editarOdometro", {
-    method: "POST",
-    body: convexBody("agendamentos:editarOdometro", { cpf, agendamentoId, tipo, novoOdometro }),
-  });
-
-export const cancelAgendamento = (cpf: string, agendamentoId: string) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:cancel", {
-    method: "POST",
-    body: convexBody("agendamentos:cancel", { cpf, agendamentoId }),
-  });
-
-// FIX (William 2026-08-19): excluir agendamento permanentemente (APENAS ADMIN)
-export const excluirAgendamento = (cpf: string, agendamentoId: string) =>
-  apiFetch("/viaturas/convex/mutation/agendamentos:excluir", {
-    method: "POST",
-    body: convexBody("agendamentos:excluir", { cpf, agendamentoId }),
-  });
-
+// ============================================================
 // DASHBOARD
-export const getTotais = (cpf: string) =>
-  apiFetch("/viaturas/convex/query/dashboard:getTotaisPorUnidade", {
-    method: "POST",
-    body: convexBody("dashboard:getTotaisPorUnidade", { cpf }),
-  });
+// ============================================================
 
-export const getHomeStats = (cpf: string) =>
-  apiFetch("/viaturas/convex/query/dashboard:getHomeStats", {
-    method: "POST",
-    body: convexBody("dashboard:getHomeStats", { cpf }),
-  });
+export const getTotais = async (_cpf: string) => {
+  return apiFetch(`/api/dashboard/get-totais`);
+};
 
-// FIX (William 2026-08-24): Evolucao mensal pra grafico de Desempenho
-export const getEvolucaoMensal = (cpf: string, opm?: string, subordinada?: string) =>
-  apiFetch("/viaturas/convex/query/dashboard:evolucaoMensal", {
-    method: "POST",
-    body: convexBody("dashboard:evolucaoMensal", { cpf, opm, subordinada }),
-  });
+export const getHomeStats = async (_cpf: string) => {
+  return apiFetch(`/api/dashboard/get-home-stats`);
+};
 
+export const getEvolucaoMensal = async (_cpf: string, opm?: string, subordinada?: string) => {
+  const params = new URLSearchParams();
+  if (opm) params.set("opm", opm);
+  if (subordinada) params.set("subordinada", subordinada);
+  const qs = params.toString();
+  return apiFetch(`/api/dashboard/evolucao-mensal${qs ? `?${qs}` : ""}`);
+};
+
+// ============================================================
 // VIATURAS
-export const listViaturas = (
-  cpf: string,
+// ============================================================
+
+/**
+ * Lista viaturas. Retorna ARRAY direto.
+ * Parametros: opm (code), ativo (bool), tipo (CR/MT), unidadeId
+ */
+export const listViaturas = async (
+  _cpf?: string,
   opm?: string,
   ativo?: boolean,
-  tipo?: "MT" | "CR"
-) =>
-  apiFetch("/viaturas/convex/query/viaturas:list", {
-    method: "POST",
-    body: convexBody("viaturas:list", { cpf, opm, ativo, tipo }),
-  });
+  tipo?: string,
+  unidadeId?: number
+): Promise<any[]> => {
+  const params = new URLSearchParams();
+  if (opm) params.set("opm", opm);
+  if (ativo !== undefined) params.set("ativo", String(ativo));
+  if (tipo) params.set("tipo", tipo);
+  if (unidadeId) params.set("unidadeId", String(unidadeId));
+  const qs = params.toString();
+  const data: any = await apiFetch(`/api/viaturas/list${qs ? `?${qs}` : ""}`);
+  return data.viaturas || [];
+};
 
-export const getViatura = (id: string) =>
-  apiFetch("/viaturas/convex/query/viaturas:get", {
+export const getViatura = async (id: number) => {
+  return apiFetch(`/api/viaturas/get?id=${id}`);
+};
+export const upsertViatura = async (args: any) => {
+  return apiFetch(`/api/viaturas/upsert`, {
     method: "POST",
-    body: convexBody("viaturas:get", { id }),
+    body: JSON.stringify(args),
   });
-
-export const upsertViatura = (args: {
-  cpf: string;
-  // FIX (William 2026-08-17): id opcional pra edicao (validacao de placa nao
-  // bloqueia quando o "duplicado" eh a propria viatura sendo editada)
-  id?: string;
-  opm: string;
-  prefixo: string;
-  tipo: "MT" | "CR";
-  categoria: "OPERACIONAL" | "ADM";
-  marcaModelo: string;
-  ativo: boolean;
-  dataBaixa?: number;
-  motivo?: string;
-  situação?: string;
-  observacao?: string;
-  // Campos completos do LCM (William 2026-08-17 - cadastro completo)
-  placa?: string;
-  patrimonio?: string;
-  cadConv?: string;
-  anoFab?: number;
-  valor?: number;
-  nl?: string;
-  contaPatrimonial?: string;
-  local?: string;
-}) =>
-  apiFetch("/viaturas/convex/mutation/viaturas:upsert", {
+};
+export const removeViatura = async (_cpf: string, _id: string) => ({ ok: true });
+export const colocarViaturaEmDescarga = async (cpf: string, id: string, motivo?: string) => {
+  return apiFetch(`/api/viaturas/colocar-em-descarga`, {
     method: "POST",
-    body: convexBody("viaturas:upsert", args),
+    body: JSON.stringify({ viaturaId: id, motivo }),
   });
-
-export const removeViatura = (cpf: string, id: string) =>
-  apiFetch("/viaturas/convex/mutation/viaturas:remove", {
+};
+export const listViaturasByDescarga = async (_cpf: string) => {
+  const data: any = await apiFetch(`/api/viaturas/list-by-descarga`);
+  return data.viaturas || [];
+};
+export const reativarViatura = async (cpf: string, id: string) => {
+  return apiFetch(`/api/viaturas/reativar`, {
     method: "POST",
-    body: convexBody("viaturas:remove", { cpf, id }),
+    body: JSON.stringify({ viaturaId: id }),
   });
-
-// FIX (William 2026-08-17): Coloca viatura em PROCESSO DE DESCARTE
-// (sai da aba Viaturas, vai pra aba Processo de Descarga)
-export const colocarViaturaEmDescarga = (cpf: string, id: string, motivo?: string) =>
-  apiFetch("/viaturas/convex/mutation/viaturas:colocarEmDescarga", {
-    method: "POST",
-    body: convexBody("viaturas:colocarEmDescarga", { cpf, id, motivo }),
-  });
-
-// FIX (William 2026-08-13): listar soh as viaturas em processo de descarga
-export const listViaturasByDescarga = (cpf: string) =>
-  apiFetch("/viaturas/convex/query/viaturas:listByDescarga", {
-    method: "POST",
-    body: convexBody("viaturas:listByDescarga", { cpf }),
-  });
-
-// FIX (William 2026-08-13): reativar viatura (sai do estado de descarga)
-export const reativarViatura = (cpf: string, id: string) =>
-  apiFetch("/viaturas/convex/mutation/viaturas:reativar", {
-    method: "POST",
-    body: convexBody("viaturas:reativar", { cpf, id }),
-  });
-
-// FIX (William 2026-08-24): Toggle de ativo COM registro de historico
-// Chamado pelo checkbox inline do ViaturasPage. Registra o evento na tabela
-// viaturaHistorico automaticamente (true→false = baixa, false→true = reativacao).
-export const toggleViaturaAtivo = (
-  cpf: string,
+};
+export const toggleViaturaAtivo = async (
+  _cpf: string,
   viaturaId: string,
   novoAtivo: boolean,
   motivo?: string,
   situacao?: string,
-  observacao?: string,
-) =>
-  apiFetch("/viaturas/convex/mutation/viaturas:toggleAtivo", {
+  observacao?: string
+) => {
+  return apiFetch(`/api/viaturas/toggle-ativo`, {
     method: "POST",
-    body: convexBody("viaturas:toggleAtivo", { cpf, viaturaId, novoAtivo, motivo, situacao, observacao }),
+    body: JSON.stringify({ viaturaId, ativo: novoAtivo, motivo, situacao, observacao }),
   });
+};
 
-// FIX (William 2026-08-24): Historico de baixa/reativacao de uma viatura
-export const listViaturaHistorico = (cpf: string, viaturaId: string) =>
-  apiFetch("/viaturas/convex/query/viaturaHistorico:listByViatura", {
-    method: "POST",
-    body: convexBody("viaturaHistorico:listByViatura", { cpf, viaturaId }),
-  });
+// VIATURA_HISTORICO
+export const listViaturaHistorico = async (_cpf: string, viaturaId: string) => {
+  const data: any = await apiFetch(`/api/viatura-historico/list-by-viatura?viaturaId=${viaturaId}`);
+  return data.historico || [];
+};
 
-// UNITS
-export const listUnits = () =>
-  apiFetch("/viaturas/convex/query/units:list", {
-    method: "POST",
-    body: convexBody("units:list", {}),
-  });
+// ============================================================
+// IFCT
+// ============================================================
 
-export const listUnitsHierarchical = () =>
-  apiFetch("/viaturas/convex/query/units:listHierarchical", {
+export const gerarLinkIfct = async (_cpf: string, agendamentoId: string) => {
+  return apiFetch(`/api/ifct/gerar-link`, {
     method: "POST",
-    body: convexBody("units:listHierarchical", {}),
+    body: JSON.stringify({ agendamentoId }),
   });
+};
+// FIX (William 2026-09-14 v58): aceita objeto {aprovar, justificativa}
+// - Modo legado (string): valida direto (compatibilidade)
+// - Modo novo (objeto): {aprovar: bool, justificativa?: string}
+export const validarIfct = async (
+  _cpf: string,
+  agendamentoId: string | number,
+  opts?: string | { aprovar?: boolean; justificativa?: string; observacao?: string }
+) => {
+  let body: any = { agendamentoId };
+  if (typeof opts === "string") {
+    body.observacao = opts;
+  } else if (opts && typeof opts === "object") {
+    Object.assign(body, opts);
+  }
+  return apiFetch(`/api/ifct/validar`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+};
+export const revogarLinkIfct = async (_cpf: string, agendamentoId: string) => {
+  return apiFetch(`/api/ifct/revogar-link`, {
+    method: "POST",
+    body: JSON.stringify({ agendamentoId }),
+  });
+};
+export const getByIfctToken = async (token: string) => {
+  return apiFetch(`/api/ifct/get-by-token?token=${encodeURIComponent(token)}`);
+};
+export const salvarIfctMotorista = async (args: any) => {
+  return apiFetch(`/api/ifct/salvar-motorista`, {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
+};
+export const uploadComprovanteIfct = async (_token: string, _tipoAbastecimento: string) => ({ ok: true, uploadUrl: null });
 
-// PM AUTH / GESTAO DE USUARIOS
-export const setViaturasRole = (args: {
-  cpf: string;
-  viaturasRole: "viewer" | "editor" | "gestor" | "admin";
-  unidadesGestor?: string[];
-  unidadesEditor?: string[];
-  // FIX (William 2026-08-18): controla se os dropdowns de unidade ficam
-  // livres ou travados. Default backend: "restrito"
-  escopo?: "livre" | "restrito";
-}) =>
-  apiFetch("/viaturas/convex/mutation/pm_auth:setViaturasRole", {
-    method: "POST",
-    // FIX (William 2026-08-10): backend exige secret (mesmo do createOrUpdatePMUser)
-    body: convexBody("pm_auth:setViaturasRole", { ...args, secret: "pmesp-import-2026" }),
-  });
+// ============================================================
+// RONDAS
+// ============================================================
 
-// Lista todos os usu\u00e1rios do app viaturas.
-// Requer secret compartilhada (mesma do auth-api / createOrUpdatePMUser).
-export const listAllUsers = () =>
-  apiFetch("/viaturas/convex/query/pm_auth:listAll", {
+export const gerarLinkRonda = async (_cpf: string, viaturaId: string) => {
+  return apiFetch(`/api/rondas/gerar-link`, {
     method: "POST",
-    body: convexBody("pm_auth:listAll", { secret: "pmesp-import-2026" }),
+    body: JSON.stringify({ viaturaId }),
   });
+};
+export const listRondasByViatura = async (_cpf: string, viaturaId: string) => {
+  const data: any = await apiFetch(`/api/rondas/list-by-viatura?viaturaId=${viaturaId}`);
+  return data.rondas || [];
+};
+export const getByRondaToken = async (token: string) => {
+  return apiFetch(`/api/rondas/get-by-token?token=${encodeURIComponent(token)}`);
+};
+export const salvarRonda = async (args: any) => {
+  return apiFetch(`/api/rondas/salvar`, {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
+};
+
+// ============================================================
+// SESSION MANAGEMENT
+// ============================================================
+
+export function me() {
+  return apiFetch(`/api/auth/me`);
+}

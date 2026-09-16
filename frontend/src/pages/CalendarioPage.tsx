@@ -14,6 +14,10 @@ export default function CalendarioPage() {
   const [loading, setLoading] = useState(false)
   const [erro, setErro] = useState('')
   const [detalhe, setDetalhe] = useState<any | null>(null)
+  // FIX (William 2026-09-14 v57): clicar no QUADRADO do dia abre lista
+  // completa. Antes: soh os primeiros eventos individuais eram clicaveis
+  // e o "+N" de overflow nao levava a nada util.
+  const [diaSelecionado, setDiaSelecionado] = useState<{ data: string; eventos: any[] } | null>(null)
 
   if (!user) return <Navigate to="/login" replace />
 
@@ -142,15 +146,23 @@ export default function CalendarioPage() {
           {dias.map((d, i) => {
             const eventos = eventosPorDia[d.data] || []
             const isHoje = d.data === hojeKey
+            // FIX (William 2026-09-14 v57): o QUADRADO do dia eh clicavel pra
+            // abrir a lista do dia. Mas eventos individuais abrem detalhe direto.
             return (
               <div
                 key={i}
                 className={`calendar-day ${!d.mesAtual ? 'other-month' : ''} ${isHoje ? 'today' : ''}`}
+                style={{ cursor: eventos.length > 0 ? 'pointer' : 'default' }}
+                onClick={() => {
+                  if (eventos.length > 0) setDiaSelecionado({ data: d.data, eventos });
+                }}
+                title={eventos.length > 0 ? `Clique para ver todos os ${eventos.length} agendamento(s) deste dia` : undefined}
               >
                 <div className="calendar-day-number">{d.dia}</div>
-                {eventos.slice(0, 2).map((e, j) => {
+                {eventos.slice(0, 3).map((e, j) => {
                   // FIX (William 2026-08-24): se viatura atribuida, mostra prefixo na frente do nome
                   // Ex: "I-07019 BONFANTE" ou "I-07019 (ABC-1234) BONFANTE"
+                  // FIX (William 2026-09-14 v57): clique no evento NAO propaga pro quadrado
                   const vtr = e.viaturaAtribuida
                     ? viaturaLabel(e.viaturaAtribuida)
                     : null
@@ -162,7 +174,7 @@ export default function CalendarioPage() {
                       key={j}
                       className={`calendar-event ${e.status}`}
                       title={`${e.destino} - clique para detalhes`}
-                      onClick={() => setDetalhe(e)}
+                      onClick={(ev) => { ev.stopPropagation(); setDetalhe(e); }}
                       style={{ cursor: 'pointer' }}
                     >
                       {vtrLabel ? <strong>{vtrLabel} </strong> : null}
@@ -170,8 +182,13 @@ export default function CalendarioPage() {
                     </div>
                   )
                 })}
-                {eventos.length > 2 && (
-                  <div className="calendar-event">+{eventos.length - 2}</div>
+                {eventos.length > 3 && (
+                  <div
+                    className="calendar-event"
+                    style={{ background: '#666', color: '#fff', fontWeight: 600 }}
+                  >
+                    +{eventos.length - 3} (clique no dia pra ver todos)
+                  </div>
                 )}
               </div>
             )
@@ -179,12 +196,104 @@ export default function CalendarioPage() {
         </div>
 
         {loading && <p>Carregando...</p>}
-        {!loading && agendamentos.length === 0 && (
-          <p style={{ marginTop: 16, color: '#666', textAlign: 'center' }}>
-            (Calendário funcionando. Os agendamentos aparecerao aqui quando forem criados.)
-          </p>
-        )}
+        {/* FIX (William 2026-09-16 v76): mensagem de "funcionando" removida
+            (era ruido - usuario ja sabe que funciona). Mantem vazio quando
+            nao tem agendamentos. */}
       </div>
+
+      {/* FIX (William 2026-09-14 v57): MODAL LISTA DO DIA
+          - Abre ao clicar no QUADRADO de um dia que tem agendamentos.
+          - Lista TODOS os agendamentos daquele dia ordenados por horario.
+          - Cada item tem botao "Ver detalhes" que abre o modal de detalhe. */}
+      {diaSelecionado && (
+        <div
+          className="modal-overlay"
+          onClick={() => setDiaSelecionado(null)}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div
+            className="modal-content"
+            onClick={(ev) => ev.stopPropagation()}
+            style={{
+              background: '#fff', borderRadius: 8, padding: 24, maxWidth: 720,
+              width: '90%', maxHeight: '90vh', overflowY: 'auto',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.3)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h2 style={{ margin: 0 }}>
+                📅 Agendamentos do dia {formatarData(new Date(diaSelecionado.data).getTime())}
+              </h2>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => setDiaSelecionado(null)}
+              >Fechar</button>
+            </div>
+            <p style={{ margin: '0 0 16px 0', color: '#666', fontSize: 13 }}>
+              {diaSelecionado.eventos.length} agendamento(s) neste dia. Clique em "Ver detalhes" pra abrir o agendamento especifico.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {[...diaSelecionado.eventos]
+                .sort((a, b) => (a.retiradaHora || '').localeCompare(b.retiradaHora || ''))
+                .map((e, j) => {
+                  const st = formatarStatus(e.status)
+                  const vtr = viaturaLabel(e.viaturaAtribuida)
+                  const vtrLabel = vtr
+                    ? (vtr.placa ? `${vtr.prefixo} (${vtr.placa})` : vtr.prefixo)
+                    : '(sem viatura)'
+                  return (
+                    <div
+                      key={j}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 12,
+                        padding: 12, border: '1px solid #e0e0e0', borderRadius: 6,
+                        background: '#fafafa',
+                      }}
+                    >
+                      <div style={{
+                        minWidth: 70, fontWeight: 700, fontSize: 16,
+                        color: '#1976d2', fontFamily: 'monospace',
+                      }}>
+                        {e.retiradaHora || '—'}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                          {e.postoGraduacao} {e.nomeGuerra}
+                          {e.re ? <span style={{ color: '#888', fontWeight: 400, marginLeft: 6 }}>RE {e.re}</span> : null}
+                        </div>
+                        <div style={{ fontSize: 13, color: '#555', marginBottom: 2 }}>
+                          <strong style={{ color: '#1976d2' }}>{vtrLabel}</strong>
+                          {' · '}
+                          {e.destino}
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                          <span style={{
+                            padding: '2px 8px', borderRadius: 3,
+                            background: st.cor, color: '#fff', fontWeight: 600,
+                          }}>{st.label}</span>
+                          <span style={{ color: '#888' }}>{e.finalidade}</span>
+                        </div>
+                      </div>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={() => {
+                          // FIX: fechar o modal-do-dia antes de abrir o detalhe
+                          // (senao fica 2 modais empilhados)
+                          setDiaSelecionado(null);
+                          setDetalhe(e);
+                        }}
+                      >Ver detalhes</button>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL DETALHES DO AGENDAMENTO */}
       {detalhe && (() => {

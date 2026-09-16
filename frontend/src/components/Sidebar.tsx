@@ -1,5 +1,5 @@
-import { NavLink, useNavigate } from 'react-router-dom'
-import { logout, getUser, isAdmin, isEditor, useUserSubscription } from '../lib/auth'
+﻿import { NavLink, useNavigate } from 'react-router-dom'
+import { logout, getUser, isAdmin, isEditor, isGestor, useUserSubscription } from '../lib/auth'
 
 export default function Sidebar() {
   // FIX (William 2026-08-24): re-renderiza quando refreshUserFromServer
@@ -53,8 +53,6 @@ export default function Sidebar() {
         <NavLink to="/agendar">Agendar Viatura</NavLink>
         <NavLink to="/agendamentos">Agendamentos</NavLink>
         <NavLink to="/calendario">Calendário</NavLink>
-
-        {/* Operação: editor+ (Dashboard, Viaturas, Processo de Descarga) */}
         {(isEditor() || isAdmin()) && (
           <>
             <div className="nav-section">Operação</div>
@@ -70,6 +68,22 @@ export default function Sidebar() {
           <>
             <div className="nav-section">Admin</div>
             <NavLink to="/gestão">Usuários</NavLink>
+          </>
+        )}
+
+        {/* Gestor+: aprovar users pendentes */}
+        {isGestor() && (
+          <>
+            <div className="nav-section">Gestão</div>
+            <NavLink to="/aprovacao">Aprovar Usuários</NavLink>
+          </>
+        )}
+
+        {/* Cadastro de OPMs: admin (tudo) OU gestor (so filhas das suas) */}
+        {(isAdmin() || isGestor()) && (
+          <>
+            {!isAdmin() && <div className="nav-section">Gestão</div>}
+            <NavLink to="/opms">OPMs (Unidades)</NavLink>
           </>
         )}
       </nav>

@@ -6,15 +6,15 @@
 // Pode ser a dele (40BPMI) ou outra (CPI-7). Gestor da unidade REQUERENTE que ve.
 export const UNIDADES_REQUERENTES = [
   { value: "607000000", label: "CPI-7 (Comando de Policiamento do Interior 7)" },
-  { value: "607070000", label: "7o BPM/I" },
-  { value: "607120000", label: "12o BPM/I" },
-  { value: "607140000", label: "14o BAEP" },
-  { value: "607220000", label: "22o BPM/I" },
-  { value: "607400000", label: "40o BPM/I" },
-  { value: "607500000", label: "50o BPM/I" },
-  { value: "607530000", label: "53o BPM/I" },
-  { value: "607540000", label: "54o BPM/I" },
-  { value: "607550000", label: "55o BPM/I" },
+  { value: "607070000", label: "7º BPM/I" },
+  { value: "607120000", label: "12º BPM/I" },
+  { value: "607140000", label: "14º BAEP" },
+  { value: "607220000", label: "22º BPM/I" },
+  { value: "607400000", label: "40º BPM/I" },
+  { value: "607500000", label: "50º BPM/I" },
+  { value: "607530000", label: "53º BPM/I" },
+  { value: "607540000", label: "54º BPM/I" },
+  { value: "607550000", label: "55º BPM/I" },
   { value: "OUTRO", label: "Outro (especificar)" },
 ];
 

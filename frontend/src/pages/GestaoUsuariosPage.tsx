@@ -14,11 +14,15 @@ export default function GestaoUsuariosPage() {
   // Modal de edição completa (Role + unidades + escopo)
   const [editando, setEditando] = useState<any | null>(null)
   const [editRole, setEditRole] = useState('viewer')
-  const [editUnidadesGestor, setEditUnidadesGestor] = useState<string[]>([])
-  const [editUnidadesEditor, setEditUnidadesEditor] = useState<string[]>([])
+  // FIX (William 2026-09-14 v65): nova hierarquia - matriz + filhas-raiz (recursivo)
+  const [editMatriz, setEditMatriz] = useState<string>('')
+  const [editFilhas, setEditFilhas] = useState<string[]>([])
   // FIX (William 2026-08-18): escopo controla se os dropdowns de unidade
   // ficam livres ou travados. Default: "restrito" (mais seguro)
   const [editEscopo, setEditEscopo] = useState<'livre' | 'restrito'>('restrito')
+  // FIX (William 2026-09-14 v61): editUnit = OPM principal do usuario
+  // (mantido por compat - agora eh editMatriz, mas editUnit ainda eh usado)
+  const [editUnit, setEditUnit] = useState<string>('')
   const [editSalvo, setEditSalvo] = useState(false)
   const [editErro, setEditErro] = useState('')
 
@@ -45,6 +49,87 @@ export default function GestaoUsuariosPage() {
 
   useEffect(() => { carregar() }, [])
 
+  // FIX (William 2026-09-14 v62): helper pra resumir unidades na tabela.
+  // Quando TODAS as unidades selecionadas compartilham o mesmo commandUnit
+  // (mesma "matriz"), mostra "X e suas subordinadas" ao inves de listar uma por uma.
+  // Ex: ["7º BPM/I EM", "7º BPM-I 1ª Cia", "7º BPM-I 2ª Cia"] -> "7º BPM/I e suas subordinadas"
+  // Helper: converte QUALQUER tipo (numero, string, objeto, null) pra string segura
+  // pra evitar "id.substring is not a function" quando o backend retorna tipo
+  // misturado (ex: SQLite devolve number, mas fallback pode ser string ou objeto).
+  function safeIdStr(v: any): string {
+    if (v === null || v === undefined) return ''
+    if (typeof v === 'string') return v
+    if (typeof v === 'number') return String(v)
+    if (typeof v === 'object') {
+      // Pode ser { _id: 'x' } vindo do JOIN - tenta achar _id ou id interno
+      const inner = v._id ?? v.id
+      return inner !== undefined ? safeIdStr(inner) : ''
+    }
+    try {
+      return String(v)
+    } catch {
+      return ''
+    }
+  }
+
+  function resumirUnidades(unitsIds: any): string {
+    try {
+      if (!Array.isArray(unitsIds) || unitsIds.length === 0) return ''
+      // Normaliza IDs pra string (backend pode mandar number OU string)
+      const idsStr = unitsIds.map(safeIdStr).filter(Boolean)
+      if (idsStr.length === 0) return ''
+      if (idsStr.length === 1) {
+        const u = units.find(x => safeIdStr(x._id) === idsStr[0] || String(x.id) === idsStr[0])
+        if (u) return u.sigla || u.name || u.code || idsStr[0]
+        return idsStr[0]
+      }
+      // Pega commandUnit de cada uma
+      const commandUnits = idsStr.map(id => {
+        const u = units.find(x => safeIdStr(x._id) === id || String(x.id) === id)
+        return u ? u.commandUnit : null
+      })
+      // Se todas tem o mesmo commandUnit (e nao eh null), agrupa
+      const first = commandUnits[0]
+      if (first && commandUnits.every(c => c === first)) {
+        const matriz = units.find(x => safeIdStr(x._id) === safeIdStr(first) || String(x.id) === safeIdStr(first))
+        if (matriz) {
+          return `${matriz.sigla || matriz.name || matriz.code} e suas subordinadas`
+        }
+      }
+      // Caso contrario, mostra primeiro 3 + contador
+      const labels = idsStr.slice(0, 3).map(id => {
+        const u = units.find(x => safeIdStr(x._id) === id || String(x.id) === id)
+        return u ? (u.sigla || u.name || u.code) : id.slice(0, 8)
+      })
+      if (idsStr.length > 3) {
+        return labels.join(', ') + ` (+${idsStr.length - 3})`
+      }
+      return labels.join(', ')
+    } catch (err) {
+      // NUNCA quebrar a tabela - loga e retorna string vazia
+      console.warn('[resumirUnidades] erro:', err, 'unitsIds:', unitsIds)
+      return ''
+    }
+  }
+
+  // FIX (William 2026-09-14 v62): retorna a propria unidade + suas filhas
+  // (todas as units com commandUnit = unitId). Usado pra travar os
+  // dropdowns/checkboxes conforme a OPM principal escolhida.
+  function getMatrizEFilhas(unitId: string): any[] {
+    if (!unitId) return units
+    const result: any[] = []
+    // Inclui a propria unidade
+    const self = units.find(u => u._id === unitId)
+    if (self) result.push(self)
+    // Inclui filhas (commandUnit === unitId)
+    units.forEach(u => {
+      if (u._id !== unitId && String(u.commandUnit) === String(unitId)) {
+        result.push(u)
+      }
+    })
+    return result
+  }
+
   const filtrados = usuários.filter(u => {
     if (!busca) return true
     const q = busca.toLowerCase().trim()
@@ -60,9 +145,35 @@ export default function GestaoUsuariosPage() {
   function abrirEdição(u: any) {
     setEditando(u)
     setEditRole(u.viaturasRole || 'viewer')
-    setEditUnidadesGestor(u.unidadesGestor || [])
-    setEditUnidadesEditor(u.unidadesEditor || [])
-    setEditEscopo(u.escopo || 'restrito')  // FIX (William 2026-08-18)
+    const unitId = u.unitId ?? u.unit?._id ?? u.unit?.id ?? u.unit
+    setEditUnit(unitId ? String(unitId) : '')
+    setEditMatriz(unitId ? String(unitId) : '')
+    const unitsArr = Array.isArray(u.unidadesGestor) ? u.unidadesGestor.map(safeIdStr).filter(Boolean) : []
+    const matrizIdNum = unitId ? Number(unitId) : null
+    const matrizObj = matrizIdNum
+      ? units.find(x => safeIdStr(x._id) === String(matrizIdNum) || x.id === matrizIdNum)
+      : null
+    const temTudo: boolean = (() => {
+      if (!matrizObj) return false
+      const todas: any[] = []
+      function expand(id: number) {
+        if (todas.includes(id)) return
+        todas.push(id)
+        units.forEach(u => {
+          if (u.commandUnit === id && u.id !== undefined && !todas.includes(u.id)) expand(u.id)
+        })
+      }
+      const rootId = matrizObj.id ?? Number(matrizObj._id)
+      if (typeof rootId !== 'number' || isNaN(rootId)) return false
+      expand(rootId)
+      return todas.every((id: number) => unitsArr.includes(String(id)))
+    })()
+    if (temTudo || unitsArr.length === 0) {
+      setEditFilhas([])
+    } else {
+      setEditFilhas(unitsArr.filter((id: string) => id !== String(matrizIdNum)))
+    }
+    setEditEscopo(u.escopo || 'restrito')
     setEditSalvo(false)
     setEditErro('')
   }
@@ -71,12 +182,13 @@ export default function GestaoUsuariosPage() {
     setEditando(null)
     setEditSalvo(false)
     setEditErro('')
+    setEditUnit('')
+    setEditMatriz('')
+    setEditFilhas([])
   }
 
-  function toggleUnidade(tipo: 'gestor' | 'editor', unitId: string) {
-    const setter = tipo === 'gestor' ? setEditUnidadesGestor : setEditUnidadesEditor
-    const current = tipo === 'gestor' ? editUnidadesGestor : editUnidadesEditor
-    setter(current.includes(unitId) ? current.filter(id => id !== unitId) : [...current, unitId])
+  function toggleFilha(unitId: string) {
+    setEditFilhas(f => f.includes(unitId) ? f.filter(id => id !== unitId) : [...f, unitId])
   }
 
   async function salvarEdição() {
@@ -85,11 +197,13 @@ export default function GestaoUsuariosPage() {
     setEditErro('')
     try {
       await setViaturasRole({
-        cpf: editando.cpf,
+        userId: editando.id,
         viaturasRole: editRole as any,
-        unidadesGestor: editUnidadesGestor,
-        unidadesEditor: editUnidadesEditor,
-        escopo: editEscopo,  // FIX (William 2026-08-18)
+        escopo: editEscopo,
+        // FIX (William 2026-09-14 v65): NOVA hierarquia matriz + filhas.
+        // Backend resolve recursivamente. Se filhasIds vazio, ve' tudo da matriz.
+        matrizId: parseInt(editMatriz),
+        filhasIds: editFilhas.map(f => parseInt(f)),
       } as any)
       setEditSalvo(true)
       carregar()
@@ -138,10 +252,9 @@ export default function GestaoUsuariosPage() {
             </thead>
             <tbody>
               {filtrados.map(u => {
-                const unidadesG = (u.unidadesGestor || []).map((id: string) => {
-                  const unit = units.find(x => x._id === id)
-                  return unit ? (unit.sigla || unit.code) : id.substring(0, 8)
-                }).join(', ')
+                // FIX (William 2026-09-14 v62): usa resumirUnidades pra
+                // mostrar "X e suas subordinadas" quando aplicavel.
+                const unidadesG = resumirUnidades(u.unidadesGestor || [])
                 return (
                   <tr key={u._id}>
                     <td>{u.re}</td>
@@ -194,6 +307,80 @@ export default function GestaoUsuariosPage() {
               </select>
             </div>
 
+            {/* FIX (William 2026-09-14 v61): campo Unidade (OPM principal).
+                Define a "casa" do usuario - ele ve' so viaturas/agendamentos
+                dessa OPM por padrao. Sem isso o sistema nao sabe de qual
+                subfrota o policial faz parte. */}
+            <div className="form-group">
+              <label><strong>🏢 Matriz da OPM</strong> (define o escopo do usuario)</label>
+              <select
+                value={editMatriz}
+                onChange={e => { setEditMatriz(e.target.value); setEditUnit(e.target.value); setEditFilhas([]); }}
+                style={{ fontSize: 14, padding: 8, width: '100%' }}
+              >
+                <option value="">— Selecione a matriz —</option>
+                {/* FIX (William 2026-09-14 v65): soh mostra unidades MATRIZ
+                    (code termina em "0000" ou eh CPI-7). Eh a partir daqui
+                    que expandimos recursivamente pra pegar as filhas. */}
+                {units.filter(u => u.code && u.code.length === 9 && u.code.endsWith('0000')).map(u => (
+                  <option key={u._id} value={u._id}>
+                    {u.code} - {u.sigla || u.name}
+                  </option>
+                ))}
+              </select>
+              <small style={{ color: '#666', fontSize: 11 }}>
+                Matriz da OPM de origem (BPM, CPI-7, etc). Define quais viaturas o policial v&ecirc;.
+              </small>
+            </div>
+
+            {/* FIX (William 2026-09-14 v65): multi-select filhas-raiz (opcional).
+                Default = nada marcado = vê TODA a matriz recursivamente.
+                Marcando = restringe pra essas filhas + seus descendentes. */}
+            {editMatriz && (
+              <div className="form-group">
+                <label><strong>Filhas permitidas</strong> (opcional - sem nada marcado vê tudo)</label>
+                <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 8, maxHeight: 200, overflowY: 'auto', background: '#fff3e0' }}>
+                  <small style={{ color: '#c62828', fontWeight: 600, display: 'block', marginBottom: 6 }}>
+                    ⚠ ATENÇÃO: nao marque nada pra ele ver TODA a matriz.
+                    Marcando filhas, ele so' ve as unidades selecionadas (+ descendentes).
+                  </small>
+                  {units.filter(u => String(u.commandUnit) === String(editMatriz) && u._id !== editMatriz).map(u => (
+                    <label key={u._id} style={{ display: 'block', padding: 2, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={editFilhas.includes(u._id)}
+                        onChange={() => toggleFilha(u._id)}
+                        style={{ marginRight: 6 }}
+                      />
+                      <span style={{ fontFamily: 'monospace' }}>{u.code}</span> - {u.sigla || u.name}
+                    </label>
+                  ))}
+                  {(() => {
+                    const filhasCount = units.filter(u => String(u.commandUnit) === String(editMatriz) && u._id !== editMatriz).length
+                    if (filhasCount === 0) {
+                      return (
+                        <div style={{ marginTop: 8, padding: 8, background: '#ffebee', borderRadius: 4, fontSize: 12 }}>
+                          ⚠ Nenhuma OPM cadastrada como subordinada dessa matriz.
+                          <br />Se deixar tudo em branco, o usuário vê TUDA a matriz recursivamente.
+                          <br />→ Pra cadastrar subordinadas: aba <strong>OPMs (Unidades)</strong> do menu.
+                        </div>
+                      )
+                    }
+                    return (
+                      <div style={{ marginTop: 6, fontSize: 11, color: '#666' }}>
+                        ({filhasCount} filha{filhasCount !== 1 ? 's' : ''}-raiz encontrada{filhasCount !== 1 ? 's' : ''})
+                      </div>
+                    )
+                  })()}
+                </div>
+                <small style={{ color: '#666' }}>
+                  {editFilhas.length === 0
+                    ? '(vazio) - Usuário vê TODA a matriz (todas as filhas + descendentes)'
+                    : `${editFilhas.length} filha(s) selecionada(s)`}
+                </small>
+              </div>
+            )}
+
             {/* FIX (William 2026-08-18): Escopo dos filtros de unidade */}
             <div className="form-group" style={{ background: '#fff3e0', padding: 12, borderRadius: 4, border: '1px solid #ff9800' }}>
               <label><strong>🔒 Escopo dos filtros de unidade</strong></label>
@@ -216,40 +403,21 @@ export default function GestaoUsuariosPage() {
               </small>
             </div>
 
-            <div className="form-group">
-              <label><strong>Unidades onde é GESTOR</strong> (vai aprovar pedidos de viatura)</label>
-              <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 8, maxHeight: 200, overflowY: 'auto' }}>
-                {units.map(u => (
-                  <label key={u._id} style={{ display: 'block', padding: 2, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={editUnidadesGestor.includes(u._id)}
-                      onChange={() => toggleUnidade('gestor', u._id)}
-                      style={{ marginRight: 6 }}
-                    />
-                    <span style={{ fontFamily: 'monospace' }}>{u.code}</span> - {u.sigla || u.name}
-                  </label>
-                ))}
-              </div>
-              <small style={{ color: '#666' }}>{editUnidadesGestor.length} unidade(s) selecionada(s)</small>
-            </div>
-
-            <div className="form-group">
-              <label><strong>Unidades onde é EDITOR</strong> (vai atribuir viatura a pedido aprovado)</label>
-              <div style={{ border: '1px solid #ddd', borderRadius: 4, padding: 8, maxHeight: 200, overflowY: 'auto' }}>
-                {units.map(u => (
-                  <label key={u._id} style={{ display: 'block', padding: 2, cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={editUnidadesEditor.includes(u._id)}
-                      onChange={() => toggleUnidade('editor', u._id)}
-                      style={{ marginRight: 6 }}
-                    />
-                    <span style={{ fontFamily: 'monospace' }}>{u.code}</span> - {u.sigla || u.name}
-                  </label>
-                ))}
-              </div>
-              <small style={{ color: '#666' }}>{editUnidadesEditor.length} unidade(s) selecionada(s)</small>
+            <div className="form-group" style={{ background: '#e3f2fd', padding: 12, borderRadius: 4, border: '1px solid #1976d2' }}>
+              <strong>📌 Visão geral</strong>
+              <p style={{ margin: '8px 0 4px 0', fontSize: 13 }}>
+                Matriz: <strong>{(() => {
+                  const u = units.find(x => x._id === editMatriz)
+                  return u ? `${u.code} - ${u.sigla || u.name}` : '(não selecionada)'
+                })()}</strong>
+              </p>
+              <p style={{ margin: '4px 0', fontSize: 13 }}>
+                Filhas-raiz selecionadas: <strong>{editFilhas.length === 0 ? '(todas - vê toda a matriz recursivamente)' : editFilhas.length}</strong>
+              </p>
+              <p style={{ margin: '4px 0', fontSize: 12, color: '#555' }}>
+                🚦 GESTOR e EDITOR são gerados pelo backend a partir da matriz+filhas.
+                Não precisa mais marcar nada - é automático.
+              </p>
             </div>
 
             {editErro && <div className="alert alert-error">{editErro}</div>}

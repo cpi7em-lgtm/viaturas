@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.vercel/
+.turbo/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# PGlite local data
+.pgdata/
+*.pgdata
+*.pglite
+
+# SQLite local (dev only)
+*.db
+*.db-shm
+*.db-wal
+viaturas.db*
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Vite
+*.local
+
+# Vercel
+.vercel
+
+# Convex legacy (nao eh mais usado - migrado pra SQLite/Vercel Postgres)
+convex/
+convex-*.tgz
+convex-node_modules.tar.gz
+esbuild-linux-x64-*.tgz
+_generated/
+
+# Backups locais
+backup/
+*.bak
+*~
+logs/
+
+# Temp
+temp_*/
+
+.vercel

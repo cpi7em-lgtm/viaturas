@@ -1,45 +1,56 @@
-// Auth + API client - Sistema de Viaturas CPI-7
+// ============================================================
+// auth.ts - Auth Google (OAuth 2.0 popup) + JWT próprio + apiFetch
+// Sistema de Viaturas CPI-7 (Vercel)
+// ============================================================
+
 import { useEffect, useState } from "react";
 
-// FIX (William 2026-08-27): VITE_API_BASE aponta pro tunnel (Vercel) quando
-// existir, senao cai pra /api relativo (nginx local faz proxy).
-// Sem isso, Vercel bate em /api/auth/login na propria Vercel = 404.
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "/api";
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "";
+const GOOGLE_CLIENT_ID =
+  (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) || "";
 
-// Salva JWT no localStorage
 const TOKEN_KEY = "viaturas_token";
 const USER_KEY = "viaturas_user";
 
 export interface User {
-  cpf: string;
+  id: number;
+  googleId: string;
+  email: string;
+  name: string;
+  picture?: string;
+  cpf?: string;
   re?: string;
   digre?: string;
-  name?: string;
   warName?: string;
   postoGraduacao?: string;
-  codptgr?: string;
   opmCode?: string;
-  unit?: string;  // ObjectId da unit
-  email?: string;
+  unitId?: number;
+  unit?: {
+    id: number;
+    code: string;
+    name: string;
+    sigla?: string;
+  } | null;
+  sexo?: string;
+  dataNascimento?: string;
   telefone?: string;
-  // Role do app viaturas
-  viaturasRole?: "viewer" | "editor" | "gestor" | "admin";
-  unidadesGestor?: string[];
-  unidadesEditor?: string[];
-  // FIX (William 2026-08-18): escopo do filtro de unidade
-  // "livre" = dropdowns livres, "restrito" = dropdowns travados
-  escopo?: "livre" | "restrito";
-  // FIX (William 2026-08-21): admin master (soh William)
-  // Pode fazer acoes destrutivas (excluir agendamento, etc)
-  // Admin normal ve tudo mas NAO pode excluir/deletar
-  isMaster?: boolean;
-  // UserId do Convex
-  userId?: string;
-  // Role do Materiais (legacy)
-  role?: string;
-  unitName?: string;
-  unitId?: string;
+  role: string;
+  viaturasRole: "viewer" | "editor" | "gestor" | "admin";
+  unidadesGestor: number[];
+  unidadesEditor: number[];
+  approved: boolean;
+  active: boolean;
+  escopo: "livre" | "restrito";
+  isMaster: boolean;
+  lastLogin?: number;
+  loginCount?: number;
+  createdAt?: number;
+  promotedAt?: number;
 }
+
+// ============================================================
+// Storage
+// ============================================================
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -58,23 +69,56 @@ export function getUser(): User | null {
 export function setAuth(token: string, user: User) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
-  // FIX (William 2026-08-24): dispara evento pra Sidebar rerendenderizar
-  // sem precisar logout/login. Outros componentes escutam pra reagir.
   window.dispatchEvent(new CustomEvent("viaturas:user-updated", { detail: user }));
 }
 
-// Hook pra escutar mudancas no user (FIX William 2026-08-24)
-// Usado pelo Sidebar pra re-render quando o refresh atualiza o localStorage
-// (ex: admin promove user e o sidebar precisa mostrar Operacao imediatamente)
-export function useUserSubscription(onUpdate: (u: User) => void): User | null {
+export function clearAuth() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  window.dispatchEvent(new CustomEvent("viaturas:user-updated", { detail: null }));
+}
+
+export function isLoggedIn(): boolean {
+  return !!getToken();
+}
+
+// ============================================================
+// Permissions
+// ============================================================
+
+export function isAdmin(): boolean {
+  return getUser()?.viaturasRole === "admin";
+}
+
+export function isMaster(): boolean {
+  return getUser()?.isMaster === true;
+}
+
+export function isGestor(): boolean {
+  const r = getUser()?.viaturasRole;
+  return r === "gestor" || r === "admin";
+}
+
+export function isEditor(): boolean {
+  const r = getUser()?.viaturasRole;
+  return r === "editor" || r === "gestor" || r === "admin";
+}
+
+export function isEditorOrGestor(): boolean {
+  return isEditor();
+}
+
+// ============================================================
+// Hook de subscription
+// ============================================================
+
+export function useUserSubscription(onUpdate?: (u: User | null) => void): User | null {
   const [user, setUser] = useState<User | null>(() => getUser());
   useEffect(() => {
     function handler(e: Event) {
-      const ce = e as CustomEvent<User>;
-      if (ce.detail) {
-        setUser(ce.detail);
-        onUpdate(ce.detail);
-      }
+      const ce = e as CustomEvent<User | null>;
+      setUser(ce.detail);
+      onUpdate?.(ce.detail ?? null);
     }
     window.addEventListener("viaturas:user-updated", handler as EventListener);
     return () => window.removeEventListener("viaturas:user-updated", handler as EventListener);
@@ -82,197 +126,182 @@ export function useUserSubscription(onUpdate: (u: User) => void): User | null {
   return user;
 }
 
-export function clearAuth() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+// ============================================================
+// Google OAuth 2.0 - fluxo "code" (server troca por tokens)
+// Mais robusto que GSI. Backend recebe o `code`, troca por
+// id_token + access_token, valida o id_token, cria user.
+// ============================================================
+
+// Gera um random state pra proteger contra CSRF
+function genState(): string {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function isLoggedIn(): boolean {
-  return !!getToken();
+const STATE_KEY = "viaturas_oauth_state";
+
+export interface LoginResult {
+  ok: boolean;
+  isNewUser: boolean;
+  needsProfile: boolean;
+  needsApproval: boolean;
+  token: string;
+  session: any;
 }
 
-export function isAdmin(): boolean {
-  const u = getUser();
-  return u?.viaturasRole === "admin";
-}
+/**
+ * Abre popup OAuth 2.0 com Google.
+ * Redireciona pra /api/auth/google/start que faz o redirect pro Google.
+ * Google volta pro /api/auth/google/callback com o code.
+ * Backend troca o code por tokens, valida, cria user, retorna JWT.
+ */
+export function loginWithGoogle(): Promise<LoginResult> {
+  return new Promise(async (resolve, reject) => {
+    if (!GOOGLE_CLIENT_ID) {
+      reject(new Error("VITE_GOOGLE_CLIENT_ID não configurado"));
+      return;
+    }
+    const state = genState();
+    sessionStorage.setItem(STATE_KEY, state);
 
-// FIX (William 2026-08-21): admin master (soh William por enquanto)
-// Pode fazer acoes DESTRUTIVAS (excluir agendamento, deletar viatura, etc)
-// Diferente de isAdmin() - admin normal (Peres/Jesus) eh admin mas nao master
-export function isMaster(): boolean {
-  const u = getUser();
-  return u?.isMaster === true;
-}
+    // URL do backend que faz o redirect pro Google
+    const origin = window.location.origin;
+    const redirectUri = `${origin}/api/auth/google/callback`;
+    const scope = "openid email profile";
 
-export function isGestor(): boolean {
-  const u = getUser();
-  return u?.viaturasRole === "gestor" || u?.viaturasRole === "admin";
-}
+    // Vamos abrir o fluxo numa janela popup (mais simples que redirect).
+    // Backend em /api/auth/google/start faz o redirect pra Google.
+    const startUrl =
+      `${API_BASE}/api/auth/google/start` +
+      `?redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&state=${state}`;
 
-export function isEditor(): boolean {
-  const u = getUser();
-  // FIX (William 2026-08-19): hierarquia admin > gestor > editor > viewer
-  // Gestor tambem deve ter acesso de editor (CRUD de viatura)
-  return u?.viaturasRole === "editor" || u?.viaturasRole === "gestor" || u?.viaturasRole === "admin";
-}
+    // Popup
+    const w = 500;
+    const h = 600;
+    const left = window.screen.width / 2 - w / 2;
+    const top = window.screen.height / 2 - h / 2;
+    const popup = window.open(
+      startUrl,
+      "google_oauth",
+      `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`
+    );
+    if (!popup) {
+      reject(new Error("Popup bloqueado. Permita popups para este site."));
+      return;
+    }
 
-export function isEditorOrGestor(): boolean {
-  const u = getUser();
-  return u?.viaturasRole === "editor" || u?.viaturasRole === "gestor" || u?.viaturasRole === "admin";
-}
+    // Escuta mensagens do popup (postMessage)
+    function onMessage(e: MessageEvent) {
+      if (e.origin !== origin) return;
+      if (e.data?.type !== "google_oauth_result") return;
+      window.removeEventListener("message", onMessage);
+      clearInterval(pollClosed);
+      if (e.data.error) {
+        reject(new Error(e.data.error));
+        return;
+      }
+      const { token, session, isNewUser, needsProfile, needsApproval } = e.data;
+      const user: User = {
+        id: session.userId,
+        googleId: session.googleId,
+        email: session.email,
+        name: session.name,
+        picture: session.picture,
+        cpf: session.cpf,
+        re: session.re,
+        warName: session.warName,
+        postoGraduacao: session.postoGraduacao,
+        opmCode: session.unitCode,
+        unitId: session.unitId,
+        role: session.role,
+        viaturasRole: session.viaturasRole,
+        unidadesGestor: session.unidadesGestor || [],
+        unidadesEditor: session.unidadesEditor || [],
+        approved: session.approved,
+        active: true,
+        escopo: session.escopo || "restrito",
+        isMaster: session.isMaster,
+      };
+      setAuth(token, user);
+      resolve({
+        ok: true,
+        isNewUser,
+        needsProfile,
+        needsApproval,
+        token,
+        session,
+      });
+    }
+    window.addEventListener("message", onMessage);
 
-export async function login(cpf: string, senha: string): Promise<{ token: string; user: User }> {
-  // FIX (William 2026-08-10): sub-path /viaturas/ via proxy reverso
-  const res = await fetch(`/viaturas/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cpf, senha }),
+    // Detecta popup fechado manualmente
+    const pollClosed = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(pollClosed);
+        window.removeEventListener("message", onMessage);
+        // Não rejeita - o user pode ter fechado sem querer, sem erro
+      }
+    }, 500);
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ erro: "Erro de login" }));
-    throw new Error(err.erro || err.detail || "Erro de login");
-  }
-  const data = await res.json();
-  if (!data.ok) {
-    throw new Error(data.erro || "Login falhou");
-  }
-  setAuth(data.token, data.usuario);
-  return { token: data.token, user: data.usuario };
 }
 
 export async function logout() {
   clearAuth();
-  window.location.href = "/viaturas/login";
+  window.location.hash = "#/login";
 }
 
-// FIX (William 2026-08-11): refresh do token sem precisar da senha do holerite.
-// FIX (William 2026-08-18): busca direto do Convex pra pegar campos
-// atualizados (escopo, unidadesEditor, etc) que o JWT inicial nao tem.
-// (Removido /api/admin/refresh-token que nao existia no auth-api)
-// FIX (William 2026-08-25): NAO envia Authorization pro convex (ele
-// rejeita JWT sem auth provider). Tambem retorna o current (atualizado
-// com o que veio do Convex) mesmo se o Convex falhar, pra que o caller
-// sempre receba um user e possa chamar setUser().
 export async function refreshUserFromServer(): Promise<User | null> {
   const current = getUser();
   const token = getToken();
-  if (!current?.cpf) return null;
-  let merged: User = { ...current };
+  if (!token) return null;
   try {
-    // Buscar dados atualizados do Convex (escopo, unidadesEditor, etc)
-    // FIX (William 2026-08-21): body precisa ter { path, args } (formato convex HTTP)
-    // FIX (William 2026-08-25): SEM Authorization (convex rejeita 401)
-    const convexRes = await fetch(`/viaturas/convex/query/pm_auth:getByCpf`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ path: "pm_auth:getByCpf", args: { cpf: current.cpf } }),
-    });
-    if (convexRes.ok) {
-      const convexData = await convexRes.json();
-      const fresh = convexData?.value || convexData;
-      if (fresh) {
-        // Merge:优先 usar dados do Convex (escopo, unidadesEditor, viaturasRole)
-        // Fallback no payload do JWT (caso algum campo nao exista no Convex)
-        merged = {
-          ...current,
-          viaturasRole: fresh.viaturasRole || current.viaturasRole,
-          unidadesEditor: fresh.unidadesEditor || current.unidadesEditor,
-          unidadesGestor: fresh.unidadesGestor || current.unidadesGestor,
-          escopo: fresh.escopo || current.escopo,
-          // FIX (William 2026-08-21): isMaster tambem
-          isMaster: fresh.isMaster !== undefined ? fresh.isMaster : current.isMaster,
-          userId: fresh._id || current.userId,
-          // FIX (William 2026-08-25): copiando TODOS os campos do Convex
-          // pra resolver bug do OPM (opmCode) que nao vinha no JWT
-          opmCode: fresh.opmCode ?? current.opmCode,
-          unit: fresh.unit ?? current.unit,
-          unitName: fresh.unitName ?? current.unitName,
-          name: fresh.name || current.name,
-          warName: fresh.warName || current.warName,
-          postoGraduacao: fresh.postoGraduacao || current.postoGraduacao,
-        };
-      } else {
-        console.warn("[auth] refresh: Convex retornou value null");
-      }
-    } else {
-      console.warn("[auth] refresh: Convex HTTP", convexRes.status, "(se 401, sem auth - isso é normal)");
-    }
-    if (token) {
-      setAuth(token, merged);
-    }
-    return merged;
+    const data: any = await apiFetch(`/api/auth/me`);
+    if (!data.ok) return current;
+    setAuth(token, data.user);
+    return data.user as User;
   } catch (e) {
-    console.warn("[auth] refresh err", e);
-    // Mesmo em caso de erro, salva o current pra garantir que o localStorage
-    // tem os campos (e dispara o evento de atualizacao pros subscribers)
-    if (token) {
-      setAuth(token, merged);
-    }
-    return merged;
+    return current;
   }
 }
 
-// Fetcher com JWT automatico
-// IMPORTANTE: só envia Authorization em chamadas pro /api/ (auth-api valida).
-// Chamadas /convex/ vao SEM Authorization, porque o convex-backend self-hosted
-// não tem auth provider configurado e rejeita Bearer JWT sem claim 'iss'.
-// A seguranca das functions fica por conta da auth-api (gateway) + rede interna.
-//
-// FIX (William 2026-08-10): paths com prefixo /viaturas/ (sub-path via proxy
-// reverso no nginx do Materiais 8080). Detecta /viaturas/api/ e /viaturas/convex/.
-//
-// Convex HTTP retorna { status: "success" | "error", value: ..., errorMessage?: ... }
-// Aqui a gente extrai o .value automaticamente pra chamadas /convex/
+// ============================================================
+// apiFetch
+// ============================================================
+
 export async function apiFetch<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...((options.headers as Record<string, string>) || {}),
   };
-  // Detecta tipo de path:
-  //   /convex/* ou /viaturas/convex/* -> convex backend (NÃO manda Authorization)
-  //   /api/* ou /viaturas/api/*       -> auth-api (manda Authorization)
-  //   http*                          -> URL absoluta (NÃO prefixa)
-  //   outros                         -> prefixa com API_BASE (/api)
-  const isAbsolute = path.startsWith("http");
-  const isConvex = path.startsWith("/convex/") || path.startsWith("/viaturas/convex/");
-  const isApi = path.startsWith("/api/") || path.startsWith("/viaturas/api/");
-  if (token && !isConvex && !isAbsolute) {
+  if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
+
+  const isAbsolute = path.startsWith("http");
   let url: string;
-  if (isAbsolute || isConvex || isApi) {
-    url = path;  // passa direto
-  } else {
+  if (isAbsolute) {
+    url = path;
+  } else if (API_BASE) {
     url = `${API_BASE}${path}`;
+  } else {
+    url = path;
   }
-  const res = await fetch(url, {
-    ...options,
-    headers,
-  });
-  // Só redireciona pro /login em 401 do /api/ (auth-api sinalizou sessão expirada)
-  // 401 do /convex/ pode ser problema de funcao, NÃO é sessão expirada
-  if (res.status === 401 && (isApi || !isConvex)) {
+
+  const res = await fetch(url, { ...options, headers });
+
+  if (res.status === 401) {
     clearAuth();
-    window.location.href = "/viaturas/login";
+    window.location.hash = "#/login";
     throw new Error("Sessão expirada");
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: "Erro" }));
-    throw new Error(err.detail || err.erro || err.errorMessage || "Erro de requisicao");
-  }
-  // Resposta do Convex: { status: "success", value: T } ou { status: "error", errorMessage: ... }
-  if (isConvex) {
-    const data = await res.json();
-    if (data && typeof data === "object" && "status" in data) {
-      if (data.status === "error") {
-        throw new Error(data.errorMessage || "Erro Convex");
-      }
-      return data.value as T;
-    }
-    return data as T;
+    const err = await res.json().catch(() => ({ error: "Erro" }));
+    throw new Error(err.error || err.erro || "Erro de requisicao");
   }
   return res.json();
 }
+
+export { GOOGLE_CLIENT_ID };

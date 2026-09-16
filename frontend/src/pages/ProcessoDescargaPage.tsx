@@ -18,6 +18,82 @@ export default function ProcessoDescargaPage() {
 
   if (!user) return <Navigate to="/login" replace />
 
+  // FIX (William 2026-09-16 v74): mesmo escopo da ViaturasPage
+  // Regra de visualizacao por unidade: editor/gestor/admin so ve suas unidades
+  // - admin (William) ou escopo="livre" -> tudo livre
+  // - 1 unidade matriz BPM (!= CPI-7) -> unidade travada, filhas livres
+  // - 1 unidade filha -> ambos travados
+  // - 1 unidade CPI-7 raiz (607000000) -> livre (ve tudo)
+  const escopoInfo = useMemo(() => {
+    if (!user) return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+    if (user.viaturasRole === 'admin') {
+      return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+    }
+    if ((user as any).escopo === 'livre') {
+      return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+    }
+    const unidadesUser = (user.unidadesEditor && user.unidadesEditor.length > 0
+      ? user.unidadesEditor
+      : (user.unidadesGestor || [])
+    ).map((u: any) => typeof u === 'object' ? u.id : u).filter(Boolean);
+
+    if (unidadesUser.length === 0) {
+      return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+    }
+
+    const matrizTecnica = (id: any): number | null => {
+      const unit = units.find((u: any) => u.id === id || u._id === String(id))
+      if (!unit) return null
+      if (unit.code && unit.code.endsWith('0000')) return unit.id
+      return unit.commandUnit ?? null
+    }
+
+    // DEFENSIVO: se units ainda nao carregou, trava na 1a unidade (v71)
+    if (units.length === 0) {
+      const firstId = String(unidadesUser[0])
+      return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: firstId, subordinadaFixa: '' }
+    }
+
+    const matrizesList = unidadesUser.map(matrizTecnica).filter((x: any) => x !== null)
+    const firstMT = matrizesList[0]
+    if (firstMT !== undefined && matrizesList.every((m: any) => m === firstMT)) {
+      const matriz = units.find((u: any) => u.id === firstMT || u._id === String(firstMT))
+      if (matriz) {
+        if (matriz.code === '607000000') {
+          return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+        }
+        return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: matriz._id, subordinadaFixa: '' }
+      }
+    }
+    if (unidadesUser.length === 1) {
+      const unicaUnidade = unidadesUser[0]
+      const unit = units.find((u: any) => u.id === unicaUnidade || u._id === String(unicaUnidade))
+      if (unit) {
+        if (unit.code === '607000000') {
+          return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+        }
+        if (unit.code && unit.code.endsWith('0000')) {
+          return { lockedUnidade: true, lockedSubordinada: false, unidadeFixa: unit._id, subordinadaFixa: '' }
+        }
+        if (unit.parentUnit) {
+          return { lockedUnidade: true, lockedSubordinada: true, unidadeFixa: unit.parentUnit, subordinadaFixa: unit._id }
+        }
+      }
+    }
+    return { lockedUnidade: false, lockedSubordinada: false, unidadeFixa: '', subordinadaFixa: '' }
+  }, [user, units])
+
+  // Quando escopo trava, seta filtros pros valores fixos
+  useEffect(() => {
+    if (escopoInfo.lockedUnidade && escopoInfo.unidadeFixa) {
+      setFiltroUnidade(escopoInfo.unidadeFixa)
+    }
+    if (escopoInfo.lockedSubordinada && escopoInfo.subordinadaFixa) {
+      setFiltroSubordinada(escopoInfo.subordinadaFixa)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [escopoInfo.unidadeFixa, escopoInfo.subordinadaFixa, escopoInfo.lockedUnidade, escopoInfo.lockedSubordinada])
+
   function carregar() {
     setLoading(true)
     Promise.all([
@@ -26,22 +102,30 @@ export default function ProcessoDescargaPage() {
     ])
       .then(([emDescarga, unitsList]) => {
         // Enriquece com opmCode/opmName
+        // FIX (William 2026-09-16 v74): v.opm agora eh OBJETO {_id, id, code, name, sigla}
+        // vindo do backend list-by-descarga (com JOIN ja feito). Helper pra extrair id:
+        const getOpmId = (v: any): string => {
+          if (!v || !v.opm) return ''
+          return typeof v.opm === 'object' ? String(v.opm.id ?? v.opm._id) : String(v.opm)
+        }
         const unitsById = new Map(unitsList.map((u: any) => [u._id.toString(), u]))
         const enriched = emDescarga.map((v: any) => {
-          const unit = unitsById.get(v.opm.toString())
+          const opmId = getOpmId(v)
+          const unit = unitsById.get(opmId)
           return {
             ...v,
-            opmCode: unit?.code || '',
-            opmName: unit?.name || '',
+            opmCode: (v.opm && typeof v.opm === 'object' ? v.opm.code : '') || unit?.code || '',
+            opmName: (v.opm && typeof v.opm === 'object' ? v.opm.name : '') || unit?.name || '',
           }
         })
         // Agrupa por unidade (matriz)
         const porUnidadeMap: Record<string, { matrizCode: string; matrizName: string; matrizId: string; count: number; motos: number; carros: number }> = {}
         for (const v of enriched) {
-          const unit = unitsById.get(v.opm.toString())
-          const matrizId = unit?.parentUnit ? unit.parentUnit : v.opm  // se for filha, agrupa pela matriz
-          const matriz = unitsById.get(matrizId.toString()) || unit
-          const k = matrizId.toString()
+          const opmId = getOpmId(v)
+          const unit = unitsById.get(opmId)
+          const matrizId = unit?.parentUnit ? unit.parentUnit : opmId  // se for filha, agrupa pela matriz
+          const matriz = unitsById.get(String(matrizId)) || unit
+          const k = String(matrizId)
           if (!porUnidadeMap[k]) {
             porUnidadeMap[k] = {
               matrizId: k,
@@ -111,17 +195,19 @@ export default function ProcessoDescargaPage() {
   // Filtragem
   const q = busca.toLowerCase().trim()
   const filtradas = todas.filter((v: any) => {
+    // FIX (William 2026-09-16 v74): v.opm agora eh OBJETO {_id, id, code, ...}
+    // vindo do backend list-by-descarga. Comparar com string via String() ou usar .id.
+    const vOpmId = v.opm ? (typeof v.opm === 'object' ? String(v.opm.id) : String(v.opm)) : ''
     // FIX (William 2026-08-21): filtro de unidade (matriz) - se filtrou matriz,
     // inclui a matriz + filhas (subordinadas)
     if (filtroUnidade) {
-      // Se a viatura eh da propria matriz OU de uma filha
-      if (v.opm !== filtroUnidade) {
-        const unit = units.find((u: any) => u._id === v.opm)
+      if (vOpmId !== filtroUnidade) {
+        const unit = units.find((u: any) => u._id === vOpmId || String(u.id) === vOpmId)
         if (!unit || unit.parentUnit !== filtroUnidade) return false
       }
     }
     // FIX (William 2026-08-21): filtro de subordinada especifica
-    if (filtroSubordinada && v.opm !== filtroSubordinada) return false
+    if (filtroSubordinada && vOpmId !== filtroSubordinada) return false
     // FIX (William 2026-08-21): filtro de tipo (MT/CR)
     if (filtroTipo && v.tipo !== filtroTipo) return false
     if (!q) return true
@@ -213,17 +299,38 @@ export default function ProcessoDescargaPage() {
           <select
             value={filtroUnidade}
             onChange={e => { setFiltroUnidade(e.target.value); setFiltroSubordinada('') }}
+            disabled={escopoInfo.lockedUnidade}
             style={{
-              padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc',
-              background: 'white', minWidth: 220, cursor: 'pointer', fontSize: 14,
+              padding: '6px 10px', borderRadius: 4,
+              border: escopoInfo.lockedUnidade ? '3px solid #e65100' : '1px solid #ccc',
+              background: escopoInfo.lockedUnidade ? '#ffe0b2' : 'white',
+              minWidth: 220,
+              cursor: escopoInfo.lockedUnidade ? 'not-allowed' : 'pointer',
+              fontSize: 14,
+              color: escopoInfo.lockedUnidade ? '#bf360c' : '#333',
+              fontWeight: escopoInfo.lockedUnidade ? 600 : 400,
             }}
+            title={escopoInfo.lockedUnidade ? '🔒 Unidade travada pelo seu escopo - você só tem acesso a esta matriz e suas filhas' : 'Filtrar por unidade'}
           >
-            <option value="">Todas as unidades</option>
-            {matrizes.map((u: any) => (
-              <option key={u._id} value={u._id}>
-                {u.code} - {u.sigla || u.name}
-              </option>
-            ))}
+            {escopoInfo.lockedUnidade
+              ? (() => {
+                  const u = units.find((x: any) => x._id === escopoInfo.unidadeFixa || String(x.id) === String(escopoInfo.unidadeFixa));
+                  return (
+                    <option value={escopoInfo.unidadeFixa}>
+                      🔒 {u ? `${u.code} - ${u.sigla || u.name}` : escopoInfo.unidadeFixa}
+                    </option>
+                  );
+                })()
+              : (
+                <>
+                  <option value="">Todas as unidades</option>
+                  {matrizes.map((u: any) => (
+                    <option key={u._id} value={u._id}>
+                      {u.code} - {u.sigla || u.name}
+                    </option>
+                  ))}
+                </>
+              )}
           </select>
 
           {/* Dropdown Subordinada (soh aparece se a unidade selecionada tem filhas) */}
@@ -231,18 +338,49 @@ export default function ProcessoDescargaPage() {
             <select
               value={filtroSubordinada}
               onChange={e => setFiltroSubordinada(e.target.value)}
+              disabled={escopoInfo.lockedSubordinada}
               style={{
-                padding: '6px 10px', borderRadius: 4, border: '1px solid #ccc',
-                background: 'white', minWidth: 240, cursor: 'pointer', fontSize: 14,
+                padding: '6px 10px', borderRadius: 4,
+                border: escopoInfo.lockedSubordinada ? '3px solid #e65100' : '1px solid #ccc',
+                background: escopoInfo.lockedSubordinada ? '#ffe0b2' : 'white',
+                minWidth: 240,
+                cursor: escopoInfo.lockedSubordinada ? 'not-allowed' : 'pointer',
+                fontSize: 14,
+                color: escopoInfo.lockedSubordinada ? '#bf360c' : '#333',
+                fontWeight: escopoInfo.lockedSubordinada ? 600 : 400,
               }}
+              title={escopoInfo.lockedSubordinada ? '🔒 Filha travada pelo seu escopo' : 'Filtrar por uma filha específica'}
             >
-              <option value="">Todas as subordinadas</option>
-              {unidadesFilhas.map((u: any) => (
-                <option key={u._id} value={u._id}>
-                  {u.code} - {u.name}
+              {escopoInfo.lockedSubordinada ? (
+                <option value={escopoInfo.subordinadaFixa}>
+                  🔒 {units.find((x: any) => x._id === escopoInfo.subordinadaFixa)?.name || escopoInfo.subordinadaFixa}
                 </option>
-              ))}
+              ) : (
+                <>
+                  <option value="">Todas as subordinadas</option>
+                  {unidadesFilhas.map((u: any) => (
+                    <option key={u._id} value={u._id}>
+                      {u.code} - {u.name}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
+          )}
+
+          {/* Badge visual de escopo restrito (igual ViaturasPage v69) */}
+          {(escopoInfo.lockedUnidade || escopoInfo.lockedSubordinada) && (
+            <span style={{
+              padding: '6px 12px',
+              background: '#e65100',
+              border: '2px solid #bf360c',
+              borderRadius: 6,
+              fontSize: 12,
+              color: 'white',
+              fontWeight: 700,
+            }} title="Seu escopo restringe os filtros de unidade. Você só vê as unidades que tem acesso.">
+              🔒 ESCOPO RESTRITO
+            </span>
           )}
 
           <div style={{ flex: 1 }}></div>
@@ -298,7 +436,7 @@ export default function ProcessoDescargaPage() {
                   <td>{v.anoFab || '-'}</td>
                   <td>{v.valor ? `R$ ${v.valor.toFixed(2)}` : '-'}</td>
                   <td>{v.situacao || '-'}</td>
-                  <td><code style={{ fontSize: 11 }}>{v.opmCode || v.opm?.substring(0, 8)}</code></td>
+                  <td><code style={{ fontSize: 11 }}>{v.opmCode || (v.opm && typeof v.opm === 'object' ? v.opm.code : String(v.opm || '').substring(0, 8))}</code></td>
                   <td>
                     <div style={{ display: 'flex', gap: 4 }}>
                       <button

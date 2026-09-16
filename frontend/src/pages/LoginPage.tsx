@@ -1,34 +1,31 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { login } from '../lib/auth'
+// ============================================================
+// LoginPage - Abre popup OAuth 2.0 com Google
+// ============================================================
+
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { loginWithGoogle, GOOGLE_CLIENT_ID } from "../lib/auth";
 
 export default function LoginPage() {
-  const [cpf, setCpf] = useState('')
-  const [senha, setSenha] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [erro, setErro] = useState('')
-  const nav = useNavigate()
+  const nav = useNavigate();
+  const [loading, setLoading] = useState(false);
+  const [erro, setErro] = useState("");
 
-  function formatCpf(v: string) {
-    const clean = v.replace(/\D/g, '').slice(0, 11)
-    return clean
-      .replace(/(\d{3})(\d)/, '$1.$2')
-      .replace(/(\d{3})(\d)/, '$1.$2')
-      .replace(/(\d{3})(\d{1,2})$/, '$1-$2')
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setErro('')
-    setLoading(true)
+  async function handleLogin() {
+    setErro("");
+    setLoading(true);
     try {
-      const cpfClean = cpf.replace(/\D/g, '')
-      await login(cpfClean, senha)
-      nav('/', { replace: true })
+      const result = await loginWithGoogle();
+      if (result.needsProfile) {
+        nav("/completar-cadastro", { replace: true });
+      } else if (result.needsApproval) {
+        nav("/aguardando-aprovacao", { replace: true });
+      } else {
+        nav("/", { replace: true });
+      }
     } catch (err: any) {
-      setErro(err.message || 'Erro de login')
-    } finally {
-      setLoading(false)
+      setErro(err.message || "Erro de login");
+      setLoading(false);
     }
   }
 
@@ -38,46 +35,40 @@ export default function LoginPage() {
         <h1>Viaturas CPI-7</h1>
         <p className="subtitle">Sistema de Agendamento de Viaturas</p>
 
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label>CPF</label>
-            <input
-              type="text"
-              value={cpf}
-              onChange={e => setCpf(formatCpf(e.target.value))}
-              placeholder="000.000.000-00"
-              maxLength={14}
-              required
-              autoFocus
-            />
+        {erro && <div className="alert alert-error">{erro}</div>}
+
+        {loading ? (
+          <div style={{ textAlign: "center", padding: 20 }}>
+            <p>Autenticando...</p>
+            <p style={{ fontSize: 12, color: "#888" }}>
+              Se o popup do Google não abriu, permita popups pra este site.
+            </p>
           </div>
-          <div className="form-group">
-            <label>Senha do Holerite</label>
-            <input
-              type="password"
-              value={senha}
-              onChange={e => setSenha(e.target.value)}
-              placeholder="Sua senha do Portal PM"
-              required
-            />
-          </div>
+        ) : (
+          <>
+            <button
+              onClick={handleLogin}
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              <span style={{ marginRight: 8 }}>🔐</span> Entrar com Google
+            </button>
+            {!GOOGLE_CLIENT_ID && (
+              <div className="alert alert-warning" style={{ marginTop: 12, fontSize: 12 }}>
+                <strong>Setup pendente:</strong> VITE_GOOGLE_CLIENT_ID não definido.
+                <br />
+                Edite <code>frontend/.env</code> e adicione seu Client ID.
+              </div>
+            )}
+          </>
+        )}
 
-          {erro && <div className="alert alert-error">{erro}</div>}
-
-          <button
-            type="submit"
-            className="btn btn-primary"
-            disabled={loading}
-            style={{ width: '100%', justifyContent: 'center' }}
-          >
-            {loading ? 'Entrando...' : 'Entrar'}
-          </button>
-        </form>
-
-        <p style={{ fontSize: 11, color: '#888', marginTop: 16, textAlign: 'center' }}>
-          Login integrado com CPD PM (mesma senha do Portal de Holerite)
+        <p style={{ fontSize: 11, color: "#888", marginTop: 16, textAlign: "center" }}>
+          Acesso restrito a policiais militares do CPI-7.
+          <br />
+          Novos usuários precisam de aprovação de um gestor.
         </p>
       </div>
     </div>
-  )
+  );
 }
