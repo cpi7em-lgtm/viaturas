@@ -3,7 +3,7 @@
   "framework": "vite",
   "buildCommand": "cd frontend && node ./node_modules/vite/bin/vite.js build",
   "outputDirectory": "frontend/dist",
-  "installCommand": "cd frontend && npm install",
+  "installCommand": "npm install --no-audit --no-fund && cd frontend && npm install --no-audit --no-fund",
   "devCommand": "cd frontend && npm run dev",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
