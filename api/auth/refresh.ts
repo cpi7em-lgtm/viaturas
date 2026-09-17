@@ -62,6 +62,3 @@ function parseJsonArray(v: any): any[] {
   }
   return [];
 }
-
-  return res.status(200).json({ ok: true, token });
-}
