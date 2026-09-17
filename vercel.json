@@ -1,10 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
-  "buildCommand": "cd frontend && node ./node_modules/vite/bin/vite.js build",
+  "buildCommand": "npm run build --prefix frontend",
   "outputDirectory": "frontend/dist",
-  "installCommand": "npm install --no-audit --no-fund && cd frontend && npm install --no-audit --no-fund",
-  "devCommand": "cd frontend && npm run dev",
+  "installCommand": "npm install --no-audit --no-fund && npm install --no-audit --no-fund --prefix frontend",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ],
