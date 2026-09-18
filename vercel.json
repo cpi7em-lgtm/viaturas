@@ -1,8 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "version": 2,
-  "buildCommand": "npm install --no-audit --no-fund && npm install --no-audit --no-fund --prefix frontend && npm run build --prefix frontend",
-  "outputDirectory": "frontend/dist",
+  "buildCommand": "npm install --no-audit --no-fund --prefix frontend && npm run build --prefix frontend && bash scripts/build-vercel-output.sh",
+  "outputDirectory": ".vercel/output/static",
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 30
