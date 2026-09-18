@@ -1,28 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm install --no-audit --no-fund && npm install --no-audit --no-fund --prefix frontend && npm run build --prefix frontend && bash scripts/build-vercel-output.sh",
-  "outputDirectory": ".vercel/output/static",
-  "installCommand": "",
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/assets/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-    },
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-      ]
-    }
-  ],
+  "buildCommand": "cd frontend && npm install --no-audit --no-fund && cd .. && npm install --no-audit --no-fund && cd frontend && npm run build",
+  "outputDirectory": "frontend/dist",
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 30
     }
-  }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }
