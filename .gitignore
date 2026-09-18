@@ -44,6 +44,8 @@ yarn-error.log*
 
 # Vercel
 .vercel
+!.vercel/output/
+!.vercel/output/**
 
 # Convex legacy (nao eh mais usado - migrado pra SQLite/Vercel Postgres)
 convex/
